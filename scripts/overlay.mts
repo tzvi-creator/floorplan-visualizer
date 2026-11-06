@@ -1,0 +1,25 @@
+import fs from 'node:fs';
+import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { extractPage } from '../lib/plan/extract.ts';
+import { analyzePage } from '../lib/plan/analyze.ts';
+const [,, f, out, x0, y0, x1, y1] = process.argv;
+const doc = await pdfjs.getDocument({ data: new Uint8Array(fs.readFileSync(f)), useSystemFonts: true }).promise;
+let t = Date.now();
+const D = await extractPage(await doc.getPage(1), pdfjs.OPS);
+console.log('extract ms', Date.now() - t); t = Date.now();
+const A = analyzePage(D, { onProgress: s => console.log(' ..', s) });
+console.log('analyze ms', Date.now() - t);
+console.log('blds', JSON.stringify(A.blds.map(b => `${b.name}:${b.aptIds.length}apts walls${b.walls.length}`)), 'rooms', A.rooms.length, 'doors', A.doors.length, 'windows', A.windows.length, A.warnings);
+const cols = ['#e6194b','#3cb44b','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6','#bcf60c','#008080','#9a6324','#800000','#808000','#000075','#fabebe'];
+const X0=+x0||0,Y0=+y0||0,X1=+x1||D.width,Y1=+y1||D.height;
+let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${X0} ${Y0} ${X1-X0} ${Y1-Y0}"><rect x="${X0}" y="${Y0}" width="${X1-X0}" height="${Y1-Y0}" fill="#fff"/>`;
+for (const b of A.blds) for (const w of b.walls) svg += `<rect x="${w[0]}" y="${w[1]}" width="${w[2]-w[0]}" height="${w[3]-w[1]}" fill="#888"/>`;
+A.rooms.forEach(r => { const ai = A.apts.findIndex(a => a.id === r.aptId); const c = ai < 0 ? (r.aptId===null?'#999':'#bbb') : cols[ai % cols.length]; for (const q of r.rects) svg += `<rect x="${q[0]}" y="${q[1]}" width="${q[2]-q[0]}" height="${q[3]-q[1]}" fill="${c}" fill-opacity="0.45"/>`; 
+  const m2 = (r.areaPt2*A.cmPerPt*A.cmPerPt/1e4).toFixed(1); svg += `<text x="${r.cx}" y="${r.cy}" font-size="11" text-anchor="middle" fill="#000">${r.id} ${m2}</text>`; });
+for (const w of A.windows) for (const q of w.rects) svg += `<rect x="${q[0]}" y="${q[1]}" width="${q[2]-q[0]}" height="${q[3]-q[1]}" fill="#0af"/>`;
+for (const d of A.doors) svg += `<line x1="${d.hx}" y1="${d.hy}" x2="${d.ex}" y2="${d.ey}" stroke="${d.entrance?'#f00':'#a0f'}" stroke-width="3"/>`;
+for (const e of []) svg += `<line x1="${e[0]}" y1="${e[1]}" x2="${e[2]}" y2="${e[3]}" stroke="${e[4]==='door'?'#00f':e[4]==='cell'?'#0a0':'#f00'}" stroke-width="2.5"/>`;
+for (const b of A.blds) for (const c of b.cores) svg += `<circle cx="${c.x}" cy="${c.y}" r="14" fill="none" stroke="#f0f" stroke-width="4"/>`;
+for (const p of D.paths) { if (p.stroke && p.sc==="#000000" && p.lw>=0.55 && p.pts[0][0]>X0-60 && p.pts[0][0]<X1+60 && p.pts[0][1]>Y0-60 && p.pts[0][1]<Y1+60) svg += `<path d="M${p.pts.map(q=>q[0].toFixed(1)+" "+q[1].toFixed(1)).join("L")}${p.closed?"Z":""}" fill="none" stroke="#000" stroke-width="0.8"/>`; }
+fs.writeFileSync(out, svg + "</svg>");
+fs.writeFileSync(out.replace('.svg', '.json'), JSON.stringify(A));

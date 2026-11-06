@@ -1,0 +1,11 @@
+node_modules
+.next
+.env*
+!.env.example
+.vercel
+tmp
+plans
+legacy
+*.pdf
+next-env.d.ts
+*.tsbuildinfo
