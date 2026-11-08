@@ -27,6 +27,7 @@ export function Defs() {
       <pattern id="tileK" width="24" height="24" patternUnits="userSpaceOnUse"><rect width="24" height="24" fill="#e8ebee" stroke="#cdd3d8" strokeWidth="0.6" /></pattern>
       <pattern id="tileB" width="16" height="16" patternUnits="userSpaceOnUse"><rect width="16" height="16" fill="#d9eeee" stroke="#b7d8d8" strokeWidth="0.5" /></pattern>
       <pattern id="stone" width="30" height="30" patternUnits="userSpaceOnUse"><rect width="30" height="30" fill="#e6e1d7" stroke="#d6cfc2" strokeWidth="0.5" /></pattern>
+      <pattern id="xhatch" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="10" height="10" fill="#ffffff" fillOpacity="0.55" /><line x1="0" y1="0" x2="0" y2="10" stroke="#b42318" strokeWidth="2" strokeOpacity="0.55" /></pattern>
       <pattern id="deck" width="40" height="14" patternUnits="userSpaceOnUse"><rect width="40" height="14" fill="#cfd9b8" stroke="#b6c29a" strokeWidth="0.6" /></pattern>
     </defs>
   );
@@ -64,6 +65,7 @@ export default function PlanSvg({ an, bldId, aptId, layers, style, selectedRoom,
       ))}
       {!showFloors && onRoomClick && rooms.map(r => <g key={r.id} onClick={() => onRoomClick(r.id)} style={{ cursor: 'pointer' }}>{r.rects.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0]} height={q[3] - q[1]} fill="transparent" />)}</g>)}
       {furn.map(({ it, key }) => <FurnitureSvg key={key} it={it} cm={cm} />)}
+      {rooms.filter(r => r.excluded).map(r => <g key={'x' + r.id} pointerEvents="none">{r.rects.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0]} height={q[3] - q[1]} fill="url(#xhatch)" />)}</g>)}
       {selectedRoom && rooms.filter(r => r.id === selectedRoom).map(r => <g key="sel" pointerEvents="none">{r.rects.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0]} height={q[3] - q[1]} fill="#c4501b" fillOpacity="0.18" />)}</g>)}
       {layers.walls && (overlay
         ? <g fill="none" stroke="#c4501b" strokeWidth="0.9" vectorEffect="non-scaling-stroke" pointerEvents="none">{sd.walls.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0]} height={q[3] - q[1]} vectorEffect="non-scaling-stroke" />)}</g>
@@ -112,7 +114,7 @@ function RoomLabel({ an, r, layers, fs, mkt }: { an: Analysis; r: RoomT; layers:
   const small = Math.min(w, h) < fs * 4.5 || area < 1.2;
   const f = small ? fs * 0.75 : fs;
   const lines: { t: string; k: string }[] = [];
-  if (layers.names && r.name && !(small && area < 0.9)) lines.push({ t: r.name, k: 'n' });
+  if (layers.names && r.name && !(small && area < 0.9)) lines.push({ t: r.excluded ? r.name + ' (לא בדירה)' : r.name, k: 'n' });
   if (layers.dims && !small) lines.push({ t: `${fmtDim(a)} × ${fmtDim(b)}`, k: 'd' });
   if (layers.areas && area >= 0.9) lines.push({ t: `${area.toFixed(1)} מ״ר`, k: 'a' });
   if (!lines.length) return null;

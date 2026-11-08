@@ -50,7 +50,20 @@ export function roomFacts(an: Analysis, rooms: RoomT[]) {
   return rooms.map((r, i) => {
     const w = (r.inner[2] - r.inner[0]) * an.cmPerPt / 100, h = (r.inner[3] - r.inner[1]) * an.cmPerPt / 100;
     const [a, b] = w >= h ? [w, h] : [h, w];
-    return { n: i + 1, id: r.id, areaM2: +(r.areaPt2 * an.cmPerPt * an.cmPerPt / 10000).toFixed(1), dimsM: `${a.toFixed(2)}x${b.toFixed(2)}`, hint: r.link === 'bridge' ? 'מחובר לדירה רק דרך חלון/הזזה (כנראה מרפסת/פיר/חדרון חיצוני)' : 'מחובר בדלת או בפתח פתוח', current: r.name };
+    return { n: i + 1, id: r.id, areaM2: +(r.areaPt2 * an.cmPerPt * an.cmPerPt / 10000).toFixed(1), dimsM: `${a.toFixed(2)}x${b.toFixed(2)}`, hint: (r.tile || 0) >= 0.05 ? 'רצפת ריצוף מרובע אפור (תבנית משבצות) – כמעט בוודאות מרפסת/שטח חיצוני' : r.link === 'bridge' ? 'מחובר לדירה רק דרך חלון/הזזה (כנראה מרפסת/פיר/חדרון חיצוני)' : 'מחובר בדלת או בפתח פתוח', current: r.name };
   });
 }
 export type { Rect };
+
+/** the whole page as SVG (for reading the title block / printed scale with AI vision) */
+export function pageSvg(raw: RawPage, widthPx = 1600): { svg: string; width: number; height: number } {
+  const k = widthPx / raw.width; const W = Math.round(raw.width * k), H = Math.round(raw.height * k);
+  let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${raw.width} ${raw.height}"><rect width="${raw.width}" height="${raw.height}" fill="#fff"/>`;
+  for (const p of raw.paths) {
+    if (!p.stroke) continue; const c = p.sc;
+    const dark = c === '#000000' || (c.length === 7 && parseInt(c.slice(1, 3), 16) < 0xc0 && c.slice(1, 3) === c.slice(3, 5));
+    if (!dark) continue;
+    s += `<path d="M${p.pts.map(q => q[0].toFixed(1) + ' ' + q[1].toFixed(1)).join('L')}${p.closed ? 'Z' : ''}" fill="none" stroke="${c === '#000000' ? '#000' : '#888'}" stroke-width="${Math.max(0.4, p.lw)}"/>`;
+  }
+  return { svg: s + '</svg>', width: W, height: H };
+}

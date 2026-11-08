@@ -3,7 +3,7 @@ import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { extractPage } from '@/lib/plan/extract';
 import { analyzePage, guessScaleDenom } from '@/lib/plan/analyze';
-import { classifyAll } from '@/lib/plan/clientAi';
+import { classifyAll, readDeclared } from '@/lib/plan/clientAi';
 import { compact } from '@/lib/plan/classify';
 import { buildArt } from '@/lib/plan/art';
 
@@ -46,6 +46,7 @@ export default function Uploader() {
         setStage('הסוכן מזהה שמות חדרים…');
         await classifyAll(an, raw, (d, t) => { setPct(45 + Math.round((d / t) * 45)); setStage(`הסוכן מזהה שמות חדרים… (${d}/${t})`); });
       }
+      if (useAi && an.apts.length === 1) { setStage('קורא את טבלת הפרטים של התכנית לאימות שטחים…'); await readDeclared(an, raw); }
       setStage('שומר…'); setPct(95);
       const r = await fetch('/api/plans', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: name || file.name, source: file.name, analysis: compact(an) }) });
       const j = await r.json(); if (!r.ok) throw new Error(j.error || 'שמירה נכשלה');

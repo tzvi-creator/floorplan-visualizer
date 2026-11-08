@@ -8,20 +8,21 @@ const isDark = (c: string) => {
   return r < 70 && g < 70 && b < 70;
 };
 
+const isRed = (c: string) => { if (!c || c[0] !== '#' || c.length < 7) return false; const r = parseInt(c.slice(1, 3), 16), g = parseInt(c.slice(3, 5), 16), b = parseInt(c.slice(5, 7), 16); return r > 190 && g < 90 && b < 130; };
 const isGrayish = (c: string) => { if (!c || c[0] !== '#' || c.length < 7) return false; const r = parseInt(c.slice(1, 3), 16), g = parseInt(c.slice(3, 5), 16), b = parseInt(c.slice(5, 7), 16); return Math.abs(r - g) < 12 && Math.abs(g - b) < 12 && r < 0xb8; };
 
 export interface AnalyzeOptions { neckCm?: number; cmPerPt?: number; scaleDenom?: number; source?: string; onProgress?: (s: string) => void }
 
-interface Reg { id: number; area: number; per: number; x0: number; y0: number; x1: number; y1: number; sx: number; sy: number; border: boolean; cavity: boolean; hatch: number; heavy: number; bnd: number }
+interface Reg { red: number; tile: number; id: number; area: number; per: number; x0: number; y0: number; x1: number; y1: number; sx: number; sy: number; border: boolean; cavity: boolean; hatch: number; heavy: number; bnd: number }
 
-/** pen-width factor of the drawing relative to the CAD pen set used in the samples (heavy wall pen 1.08pt) */
+/** pen-width factor: most frequent black line width relative to the 0.48pt pen of the original CAD plot (1.0 = unscaled) */
 export function penFactor(raw: RawPage): number {
   const cnt = new Map<string, number>();
-  for (const p of raw.paths) if (p.stroke && isDark(p.sc)) { const k = p.lw.toFixed(2); cnt.set(k, (cnt.get(k) || 0) + 1); }
-  const widths = [...cnt.entries()].filter(([k, n]) => n >= 100 && +k >= 0.15).map(([k]) => +k).sort((a, b) => b - a);
-  if (!widths.length) return 1;
-  const f = widths[0] / 1.08;
-  return f < 0.9 && f > 0.25 ? f : 1;
+  for (const p of raw.paths) if (p.stroke && isDark(p.sc) && p.lw >= 0.1) { const k = p.lw.toFixed(2); cnt.set(k, (cnt.get(k) || 0) + 1); }
+  let best = 0, bn = 0; for (const [k, n] of cnt) if (n > bn) { bn = n; best = +k; }
+  if (!best) return 1;
+  const f = best / 0.48;
+  return f > 0.92 ? 1 : Math.max(0.25, f);
 }
 
 /** estimate cm per point from the most common wall thickness (10cm partitions / 20cm walls) */
@@ -59,6 +60,39 @@ export function calibrateByWalls(raw: RawPage, pen: number): number | null {
   return 20 / best.big;
 }
 
+const STD_DOORS = [60, 70, 75, 80, 85, 90, 95, 100, 105, 110, 120];
+
+/**
+ * Scale (cm per PDF point) from evidence inside the drawing, in this order of trust:
+ * wall thickness (10/20cm) agreeing with the CAD pen set, then either alone, then standard door widths.
+ * The printed "1:50" is NOT used: sheets are often shrunk to fit the paper, so it does not describe the PDF.
+ */
+export function estimateScale(raw: RawPage, pen: number, guessCm: number): { cm: number; source: NonNullable<Analysis['meta']['scaleSource']>; note: string } | null {
+  const wall = calibrateByWalls(raw, pen);
+  // CAD pen set: pens are scaled together with the drawing when a sheet is shrunk to fit the paper
+  const penCm = pen < 0.95 ? 1.764 / pen : raw.width > 3000 ? 1.764 : null;
+  // standard door widths
+  let doorCm: number | null = null, doorScore = 0;
+  const ds = findDoors(raw.paths, 2.5, 1, 1, [10, 95]).map(d => d.r);
+  if (ds.length >= 5) {
+    let best = 0, bs = -1;
+    for (let s = 1.3; s <= 4.8; s += 0.02) {
+      let sc = 0; for (const r of ds) { let m = 0; for (const w of STD_DOORS) m = Math.max(m, Math.exp(-(((r * s - w) / (0.045 * w)) ** 2))); sc += m; }
+      sc /= ds.length; const prior = penCm || wall || guessCm; sc *= 1 - 0.15 * Math.min(1, Math.abs(Math.log(s / prior)));
+      if (sc > bs) { bs = sc; best = s; }
+    }
+    if (bs > 0.6) { doorCm = best; doorScore = bs; }
+  }
+  const agree = (a: number | null, b: number | null) => a != null && b != null && Math.abs(a / b - 1) < 0.12;
+  if (agree(wall, penCm)) return { cm: (wall! + penCm!) / 2, source: 'wall-calibrated', note: 'עובי קירות (10/20 ס״מ) ועוביי הקווים בתכנית מסכימים' };
+  if (agree(wall, doorCm)) return { cm: (wall! + doorCm!) / 2, source: 'wall-calibrated', note: 'עובי קירות ורוחבי דלתות סטנדרטיים מסכימים' };
+  if (agree(penCm, doorCm)) return { cm: (penCm! + doorCm!) / 2, source: 'pen-set', note: 'עוביי הקווים ורוחבי הדלתות מסכימים' };
+  if (penCm) return { cm: penCm, source: 'pen-set', note: 'לפי עוביי הקווים בתכנית' };
+  if (wall) return { cm: wall, source: 'wall-calibrated', note: 'לפי עובי הקירות' };
+  if (doorCm && doorScore > 0.7) return { cm: doorCm, source: 'door-widths', note: 'לפי רוחבי דלתות סטנדרטיים' };
+  return null;
+}
+
 export function guessScaleDenom(page: { w: number; h: number }): number {
   const mmW = Math.max(page.w, page.h) * PT_TO_MM;
   if (mmW > 1000) return 50;     // A0/A1 sheets: usually 1:50
@@ -72,8 +106,8 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
   const denom = opt.scaleDenom || guessScaleDenom({ w: raw.width, h: raw.height });
   const guessCm = (PT_TO_MM * denom) / 10;
   const pen = penFactor(raw);
-  let cmPerPt = opt.cmPerPt || guessCm; let scaleSource: 'manual' | 'wall-calibrated' | 'page-size' = opt.cmPerPt || opt.scaleDenom ? 'manual' : 'page-size';
-  if (scaleSource === 'page-size') { const c = calibrateByWalls(raw, pen); if (c && Math.abs(c / guessCm - 1) > 0.12) { cmPerPt = c; scaleSource = 'wall-calibrated'; } }
+  let cmPerPt = opt.cmPerPt || guessCm; let scaleSource: NonNullable<Analysis['meta']['scaleSource']> = opt.cmPerPt || opt.scaleDenom ? 'manual' : 'page-size'; let scaleNote = '';
+  if (scaleSource === 'page-size') { const e = estimateScale(raw, pen, guessCm); if (e) { cmPerPt = e.cm; scaleSource = e.source; scaleNote = e.note; } }
   const K = 1.764 / cmPerPt; // converts "A0 @ 1:50 points" constants to this drawing's points
   const warnings: string[] = [];
 
@@ -197,11 +231,11 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
   // ---------- label free regions ----------
   log('מאתר חדרים וגבולות');
   const labels = new Int32Array(W * H);
-  const regs: Reg[] = [{ id: 0, area: 0, per: 0, x0: 0, y0: 0, x1: 0, y1: 0, sx: 0, sy: 0, border: false, cavity: false, hatch: 0, heavy: 0, bnd: 0 }];
+  const regs: Reg[] = [{ red: 0, tile: 0, id: 0, area: 0, per: 0, x0: 0, y0: 0, x1: 0, y1: 0, sx: 0, sy: 0, border: false, cavity: false, hatch: 0, heavy: 0, bnd: 0 }];
   for (let i = 0; i < W * H; i++) {
     if ((mask[i] & 5) || labels[i]) continue;
     const id = regs.length;
-    const r: Reg = { id, area: 0, per: 0, x0: 1e9, y0: 1e9, x1: -1, y1: -1, sx: 0, sy: 0, border: false, cavity: false, hatch: 0, heavy: 0, bnd: 0 };
+    const r: Reg = { red: 0, tile: 0, id, area: 0, per: 0, x0: 1e9, y0: 1e9, x1: -1, y1: -1, sx: 0, sy: 0, border: false, cavity: false, hatch: 0, heavy: 0, bnd: 0 };
     let sp = 0; stack[sp++] = i; labels[i] = id;
     while (sp) {
       const j = stack[--sp]; const x = j % W, y = (j / W) | 0;
@@ -220,7 +254,16 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
   }
   {
     let cx0 = W, cy0 = H, cx1 = 0, cy1 = 0;
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (mask[y * W + x] & 1) { if (x < cx0) cx0 = x; if (x > cx1) cx1 = x; if (y < cy0) cy0 = y; if (y > cy1) cy1 = y; }
+    // the drawing frame (largest axis-aligned rectangle on the sheet) bounds the drawing area; fall back to the extent of the walls
+    let frame: Rect | null = null, fa = 0;
+    for (const p of raw.paths) {
+      if (!p.stroke || p.pts.length < 4 || p.pts.length > 6) continue;
+      let mnx = 1e9, mny = 1e9, mxx = -1e9, mxy = -1e9; for (const q of p.pts) { mnx = Math.min(mnx, q[0]); mxx = Math.max(mxx, q[0]); mny = Math.min(mny, q[1]); mxy = Math.max(mxy, q[1]); }
+      const w = mxx - mnx, h = mxy - mny; if (w < raw.width * 0.45 || h < raw.height * 0.35 || w * h <= fa) continue;
+      if (p.pts.every(q => (Math.abs(q[0] - mnx) < 0.6 || Math.abs(q[0] - mxx) < 0.6) && (Math.abs(q[1] - mny) < 0.6 || Math.abs(q[1] - mxy) < 0.6))) { frame = [mnx, mny, mxx, mxy]; fa = w * h; }
+    }
+    if (frame) { cx0 = Math.round(frame[0] / res); cy0 = Math.round(frame[1] / res); cx1 = Math.round(frame[2] / res); cy1 = Math.round(frame[3] / res); }
+    else for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (mask[y * W + x] & 1) { if (x < cx0) cx0 = x; if (x > cx1) cx1 = x; if (y < cy0) cy0 = y; if (y > cy1) cy1 = y; }
     const tx = Math.max(4, (cx1 - cx0) * 0.02), ty = Math.max(4, (cy1 - cy0) * 0.02);
     for (const r of regs) {
       if (r.id <= 0 || r.cavity) continue;
@@ -288,7 +331,7 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
       }
       for (let i = 0; i < W * H; i++) if (nl[i]) labels[i] = nl[i];
       // rebuild region stats
-      const nr: Reg[] = []; for (let k = 0; k < next; k++) nr.push({ id: k, area: 0, per: 0, x0: 1e9, y0: 1e9, x1: -1, y1: -1, sx: 0, sy: 0, border: false, cavity: false, hatch: 0, heavy: 0, bnd: 0 });
+      const nr: Reg[] = []; for (let k = 0; k < next; k++) nr.push({ red: 0, tile: 0, id: k, area: 0, per: 0, x0: 1e9, y0: 1e9, x1: -1, y1: -1, sx: 0, sy: 0, border: false, cavity: false, hatch: 0, heavy: 0, bnd: 0 });
       for (let i = 0; i < W * H; i++) {
         const l = labels[i]; if (!l) continue; const r = nr[l]; const x = i % W, y = (i / W) | 0;
         r.area++; r.sx += x; r.sy += y; if (x < r.x0) r.x0 = x; if (x > r.x1) r.x1 = x; if (y < r.y0) r.y0 = y; if (y > r.y1) r.y1 = y;
@@ -311,6 +354,20 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
     const ang = Math.abs(Math.atan2(Math.abs(dy), Math.abs(dx)) * 180 / Math.PI);
     if (ang < 22 || ang > 68) continue;
     line(a[0], a[1], b[0], b[1], 1, 0, (x, y) => { if (x >= 0 && y >= 0 && x < W && y < H) { const l = labels[y * W + x]; if (l) regs[l].hatch++; } });
+  }
+  // gray floor-tile grid (balconies / outdoor floors)
+  for (const p of raw.paths) {
+    if (!p.stroke || p.pts.length !== 2 || !isGrayish(p.sc) || isDark(p.sc)) continue;
+    const [a, b] = p.pts; const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (L < 6 * K || L > 150 * K) continue;
+    if (Math.abs(a[0] - b[0]) > 0.3 && Math.abs(a[1] - b[1]) > 0.3) continue;
+    line(a[0], a[1], b[0], b[1], 1, 0, (x, y) => { if (x >= 0 && y >= 0 && x < W && y < H) { const l = labels[y * W + x]; if (l) regs[l].tile++; } });
+  }
+  // red hatching marks public / excluded areas in sales plans
+  for (const p of raw.paths) {
+    if (!p.stroke || p.pts.length !== 2 || !isRed(p.sc)) continue;
+    const [a, b] = p.pts; const L = Math.hypot(b[0] - a[0], b[1] - a[1]); if (L < 6 * K) continue;
+    line(a[0], a[1], b[0], b[1], 1, 0, (x, y) => { if (x >= 0 && y >= 0 && x < W && y < H) { const l = labels[y * W + x]; if (l) regs[l].red++; } });
   }
   // heavy boundary ratio (safe rooms are drawn with heavy outlines)
   for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
@@ -530,24 +587,47 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
       for (const p of good) apartments.push({ bld: bi, regs: p });
     }
   });
-  if (!blds.length) { // fallback: no stair core -> rooms joined by doors, open necks, thin partitions and window frames form apartments
+  if (!blds.length) { // fallback: no stair core (typical single-apartment sales sheet)
+    // the apartment of interest is marked with a red numbered circle; red hatching marks public/excluded areas
+    let marker: [number, number] | null = null;
+    for (const p of raw.paths) {
+      if (!p.stroke || !isRed(p.sc) || p.pts.length < 10) continue;
+      let mnx = 1e9, mny = 1e9, mxx = -1e9, mxy = -1e9; for (const q of p.pts) { mnx = Math.min(mnx, q[0]); mxx = Math.max(mxx, q[0]); mny = Math.min(mny, q[1]); mxy = Math.max(mxy, q[1]); }
+      const w = mxx - mnx, h = mxy - mny;
+      if (w > 8 * K && w < 60 * K && Math.abs(w - h) < 0.25 * w) { marker = [(mnx + mxx) / 2, (mny + mxy) / 2]; break; }
+    }
+    const markerReg = marker ? regAt(marker[0], marker[1], 6) : 0;
+    const isPublic = (r: Reg) => r.red / Math.max(1, r.area) >= 0.012;
     const comps: number[][] = [];
     for (const r of roomRegs) {
-      if (visited.has(r.id)) continue;
+      if (visited.has(r.id) || isPublic(r)) continue;
       const comp: number[] = []; const q = [r.id]; visited.add(r.id);
-      while (q.length) { const x = q.pop()!; comp.push(x); for (const g of [doorGraph, partGraph, cellGraph]) for (const n of g.get(x) || []) if (!visited.has(n) && isRoomReg(regs[n])) { visited.add(n); q.push(n); } }
+      while (q.length) { const x = q.pop()!; comp.push(x); for (const g of [doorGraph, partGraph, cellGraph]) for (const n of g.get(x) || []) if (!visited.has(n) && isRoomReg(regs[n]) && !isPublic(regs[n])) { visited.add(n); q.push(n); } }
       comps.push(comp);
     }
     blds.push({ cx: 0, cy: 0, lobby: 0, stairs: 0 });
-    for (const c of comps) if (c.reduce((sum, r) => sum + regArea(r), 0) >= 25 && c.some(r => regArea(r) >= 12)) apartments.push({ bld: 0, regs: c });
-    warnings.push('לא זוהתה ליבת בניין (מדרגות/לובי) – הדירות זוהו לפי חיבורי דלתות וקירות');
+    let chosen = comps.filter(c => c.reduce((sum, r) => sum + regArea(r), 0) >= 25 && c.some(r => regArea(r) >= 12));
+    const withMarker = markerReg ? comps.find(c => c.includes(markerReg)) : undefined;
+    if (withMarker) chosen = [withMarker];
+    for (const c of chosen) apartments.push({ bld: 0, regs: c });
+    const ch = new Set(chosen.flat());
+    const near = (r: Reg) => !marker || Math.hypot((r.sx / r.area) * res - marker![0], (r.sy / r.area) * res - marker![1]) < 1500 / cmPerPt;
+    for (const r of roomRegs) if (!ch.has(r.id) && (isPublic(r) || comps.some(c => c.includes(r.id))) && near(r) && regArea(r.id) >= 1) assign.set(r.id, { bld: 0, apt: null, role: 'common' });
+    warnings.push(marker ? 'זוהתה דירה אחת לפי העיגול המסומן באדום; אזורים מסומנים בקווקוו אדום הוגדרו כשטח משותף' : 'לא זוהתה ליבת בניין (מדרגות/לובי) – הדירות זוהו לפי חיבורי דלתות וקירות');
   }
   apartments.forEach((a, ai) => a.regs.forEach(r => assign.set(r, { bld: a.bld, apt: ai })));
   // attach orphan regions (balconies, storage, shafts) by shared wall length
+  // open space outside the building (no tiles, large) is NOT part of the apartment: only tiled balconies and small niches attach
+  const openNb = new Map<number, Set<number>>();
+  for (const c of openCells) { if (!c.rb || !isRoomReg(regs[c.ra]) || !isRoomReg(regs[c.rb])) continue; for (const [x, y] of [[c.ra, c.rb], [c.rb, c.ra]]) { if (!openNb.has(x)) openNb.set(x, new Set()); openNb.get(x)!.add(y); } }
+  const orphanOk = (id: number) => regs[id].tile / Math.max(1, regs[id].area) >= 0.05 || regArea(id) <= 8;
   for (const r of roomRegs) {
-    if (assign.has(r.id)) continue;
+    if (assign.has(r.id) || !orphanOk(r.id)) continue;
     let best = 0, bw = 0;
-    for (const [n, w] of bridgeAdj(r.id)) { const as = assign.get(n); if (as && as.apt !== null && w > bw) { best = n; bw = w; } }
+    // a balcony belongs to the apartment whose room opens onto it (window / sliding door / door), not to a neighbour it merely touches
+    const viaOpening = openNb.get(r.id);
+    if (viaOpening) for (const n of viaOpening) { const as = assign.get(n); if (as && as.apt !== null) { best = n; bw = 1e9; break; } }
+    if (!best && regArea(r.id) <= 2.5) for (const [n, w] of bridgeAdj(r.id)) { const as = assign.get(n); if (as && as.apt !== null && w > bw) { best = n; bw = w; } }
     if (best && bw >= 6 / res) { assign.set(r.id, { ...assign.get(best)!, orphan: true }); continue; }
     // otherwise attach to lobby/common if adjacent
     for (const [n, w] of bridgeAdj(r.id)) { const as = assign.get(n); if (as && w > bw) { best = n; bw = w; } }
@@ -555,7 +635,7 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
   }
   // second pass for orphans that only touch other orphans
   for (let pass = 0; pass < 2; pass++) for (const r of roomRegs) {
-    if (assign.has(r.id)) continue;
+    if (assign.has(r.id) || !orphanOk(r.id)) continue;
     let best = 0, bw = 0;
     for (const [n, w] of bridgeAdj(r.id)) { if (assign.has(n) && w > bw) { best = n; bw = w; } }
     if (best && bw >= 6 / res) assign.set(r.id, { ...assign.get(best)!, orphan: true });
@@ -591,7 +671,7 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
     const rm: RoomT = {
       link: as.orphan ? 'bridge' : 'door',
       id: 'r' + r.id, aptId: as.apt === null ? null : 'a' + as.apt, bldId: 'b' + as.bld, name: '', type: as.role || 'other', auto: true,
-      rects, bbox, inner: innerRect(r), areaPt2: r.area * res * res, cx: (r.sx / r.area) * res, cy: (r.sy / r.area) * res, region: r.id,
+      rects, bbox, inner: innerRect(r), areaPt2: r.area * res * res, cx: (r.sx / r.area) * res, cy: (r.sy / r.area) * res, region: r.id, tile: r.area ? Math.round((r.tile / r.area) * 1000) / 1000 : 0,
     };
     rooms.push(rm); regionRoom.set(r.id, rm);
   });
@@ -665,7 +745,7 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
   const out: Analysis = {
     version: 1, page: { w: raw.width, h: raw.height }, cmPerPt,
     rooms, apts: aptsOut, blds: bldsOut, doors: doorsOut, windows, warnings,
-    meta: { source: opt.source, analyzedAt: new Date().toISOString(), aiUsed: false, scaleSource },
+    meta: { source: opt.source, analyzedAt: new Date().toISOString(), aiUsed: false, scaleSource, scaleNote },
   };
   heuristicNames(out);
   stripRegion(out);
@@ -695,8 +775,8 @@ function rectsFrom(pred: (x: number, y: number) => boolean, x0: number, y0: numb
 
 export interface DoorRaw { hx: number; hy: number; ex: number; ey: number; r: number; sx: number; sy: number }
 // Doors are drawn as a thin leaf rectangle (open 90deg) plus a (usually dashed) swing arc around the hinge.
-export function findDoors(paths: RawPath[], cmPerPt: number, pen = 1, K = 1): DoorRaw[] {
-  const minL = 55 / cmPerPt, maxL = 125 / cmPerPt;
+export function findDoors(paths: RawPath[], cmPerPt: number, pen = 1, K = 1, rng?: [number, number]): DoorRaw[] {
+  const minL = rng ? rng[0] : 55 / cmPerPt, maxL = rng ? rng[1] : 125 / cmPerPt;
   const leaves: { a: [number, number]; b: [number, number]; L: number }[] = [];
   const pieces: { pts: [number, number][]; cx: number; cy: number }[] = [];
   for (const p of paths) {
@@ -820,7 +900,8 @@ export function heuristicNames(a: Analysis) {
     for (const r of rs) {
       const area = m2(r);
       const w = Math.min(r.inner[2] - r.inner[0], r.inner[3] - r.inner[1]) * a.cmPerPt / 100;
-      if (r.link === 'bridge') set(r, area >= 3 ? 'balcony' : 'shaft', area >= 3 ? 'מרפסת' : 'פיר');
+      if ((r.tile || 0) >= 0.05) set(r, area >= 1.5 ? 'balcony' : 'shaft', area >= 1.5 ? 'מרפסת' : 'פיר');
+      else if (r.link === 'bridge') set(r, area >= 3 ? 'balcony' : 'shaft', area >= 3 ? 'מרפסת' : 'פיר');
       else if (r === big && area > 14) set(r, 'living_kitchen', 'סלון / מטבח');
       else if (area < 3.2) set(r, 'wc', 'שירותים');
       else if (area < 6.5 && w < 2.6) set(r, 'bath', 'חדר רחצה');

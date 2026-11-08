@@ -1,5 +1,6 @@
 import type { Analysis, AptT, DoorT, OpeningKind, Rect, RoomT, WindowT } from './types';
 import { TYPE_BY_ID, isOutdoor, openingKind } from './types';
+import { grossArea } from './area';
 
 export const roomById = (an: Analysis, id: string | null | undefined) => (id ? an.rooms.find(r => r.id === id) : undefined);
 export const aptRooms = (an: Analysis, apt: AptT) => apt.roomIds.map(i => roomById(an, i)!).filter(Boolean);
@@ -15,17 +16,19 @@ export function roomDims(an: Analysis, r: RoomT): [number, number] {
 export const fmt = (v: number, d = 2) => v.toFixed(d).replace(/\.?0+$/, m => (m === '.00' || m === '.0' ? '' : m));
 export const fmtDim = (v: number) => v.toFixed(2);
 
-export interface AptStats { total: number; balcony: number; rooms: number; bedrooms: number; counted: number }
+export interface AptStats { total: number; net: number; walls: number; balcony: number; rooms: number; bedrooms: number; counted: number; excluded: number }
 export function aptStats(an: Analysis, apt: AptT): AptStats {
-  let total = 0, balcony = 0, beds = 0, living = 0;
+  let net = 0, balcony = 0, beds = 0, living = 0, excluded = 0;
   for (const r of aptRooms(an, apt)) {
     const t = TYPE_BY_ID[r.type]; const a = roomArea(an, r);
+    if (r.excluded) { excluded += a; continue; }
     if (isOutdoor(r.type)) balcony += a;
-    else if (t?.counted !== false) total += a;
+    else if (t?.counted !== false) net += a;
     if (['bedroom', 'master', 'safe'].includes(r.type)) beds++;
     if (['living', 'living_kitchen'].includes(r.type)) living = 1;
   }
-  return { total, balcony, rooms: beds + (living || 1), bedrooms: beds, counted: total };
+  const gi = grossArea(an, apt);
+  return { total: gi.gross, net: gi.net || net, walls: gi.gross - (gi.net || net), balcony, rooms: beds + (living || 1), bedrooms: beds, counted: net, excluded };
 }
 
 export function boxOf(rs: Rect[], pad = 0): Rect {
@@ -73,7 +76,7 @@ export function planSummary(an: Analysis): string {
     lines.push(`${b.name}: ${b.aptIds.length} דירות`);
     for (const id of b.aptIds) {
       const a = an.apts.find(x => x.id === id)!; const st = aptStats(an, a);
-      lines.push(`  ${a.name}: ${st.rooms} חדרים, שטח ${st.total.toFixed(1)} מ"ר, מרפסות ${st.balcony.toFixed(1)} מ"ר; ` + aptRooms(an, a).map(r => `${r.name} (${roomArea(an, r).toFixed(1)} מ"ר, ${roomDims(an, r).map(v => v.toFixed(2)).join('×')})`).join(', '));
+      lines.push(`  ${a.name}: ${st.rooms} חדרים, שטח דירה (כולל קירות) ${st.total.toFixed(1)} מ"ר, נטו ${st.net.toFixed(1)} מ"ר, מרפסות ${st.balcony.toFixed(1)} מ"ר; ` + aptRooms(an, a).map(r => `${r.name} (${roomArea(an, r).toFixed(1)} מ"ר, ${roomDims(an, r).map(v => v.toFixed(2)).join('×')})`).join(', '));
     }
   }
   return lines.join('\n');

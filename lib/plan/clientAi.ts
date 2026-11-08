@@ -1,6 +1,6 @@
 import type { Analysis } from './types';
 import type { RawPage } from './extract';
-import { analysisSvg, cropSvg, roomFacts } from './crop';
+import { analysisSvg, cropSvg, roomFacts, pageSvg } from './crop';
 import { applyClassification, orderedRooms } from './classify';
 
 export async function svgToPng(svg: string, w: number, h: number): Promise<string> {
@@ -47,4 +47,18 @@ export async function classifyAll(an: Analysis, raw: RawPage | null, onProgress:
   };
   await Promise.all([worker(), worker(), worker()]);
   return failed;
+}
+
+/** single-apartment sheets: read the printed area / balcony area from the title block so the result can be verified */
+export async function readDeclared(an: Analysis, raw: RawPage): Promise<string> {
+  if (an.apts.length !== 1) return '';
+  try {
+    const { svg, width, height } = pageSvg(raw, 1700);
+    const png = await svgToPng(svg, width, height);
+    const r = await fetch('/api/titleblock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ imageDataUrl: png }) });
+    const j = await r.json(); if (!r.ok) return '';
+    if (j.area || j.balcony) an.apts[0].declared = { area: j.area, balcony: j.balcony };
+    if (j.aptNumber) an.apts[0].name = 'דירה ' + j.aptNumber;
+    return j.scale ? String(j.scale) : '';
+  } catch { return ''; }
 }

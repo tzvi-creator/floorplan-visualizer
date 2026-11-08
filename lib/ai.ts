@@ -52,3 +52,18 @@ export async function chatAgent(messages: { role: 'user' | 'assistant'; content:
   const resp = await client.chat.completions.create({ model, temperature: 0.4, max_tokens: 700, messages: [{ role: 'system', content: system }, ...messages.slice(-10)] });
   return resp.choices[0]?.message?.content?.trim() || '';
 }
+
+export interface TitleBlock { aptNumber?: string; floor?: string; area?: number; balcony?: number; scale?: string; direction?: string }
+/** Reads the sales-plan title block (apartment area, balcony area, scale...) from a picture of the whole sheet. */
+export async function readTitleBlock(imageDataUrl: string): Promise<TitleBlock> {
+  const { client, model } = aiClient();
+  const system = `אתה קורא כותרת (טבלת פרטים) של תכנית מכר של דירה בישראל. בתמונה גיליון שלם. חפש טבלה קטנה עם השדות: קומה, מספר דירה, שטח דירה (מ"ר), מרפסת (מ"ר), כיווני אוויר, קנ"מ. החזר JSON בלבד בפורמט {"floor":"א","aptNumber":"4","area":94,"balcony":37.4,"scale":"1:50","direction":"צפון-מערב"}. אם שדה לא מופיע או לא קריא – השמט אותו. מספרים כמספרים (לא מחרוזות). אל תנחש.`;
+  const resp = await client.chat.completions.create({
+    model, temperature: 0, max_tokens: 300, response_format: { type: 'json_object' },
+    messages: [{ role: 'system', content: system }, { role: 'user', content: [{ type: 'text', text: 'קרא את טבלת הפרטים של התכנית.' }, { type: 'image_url', image_url: { url: imageDataUrl, detail: 'high' } }] as any }],
+  });
+  const txt = resp.choices[0]?.message?.content || '{}';
+  const m = txt.match(/\{[\s\S]*\}/); if (!m) return {};
+  const j = JSON.parse(m[0]); const num = (v: any) => (typeof v === 'number' && isFinite(v) && v > 0 && v < 2000 ? v : undefined);
+  return { aptNumber: j.aptNumber != null ? String(j.aptNumber) : undefined, floor: j.floor != null ? String(j.floor) : undefined, area: num(j.area), balcony: num(j.balcony), scale: j.scale ? String(j.scale) : undefined, direction: j.direction ? String(j.direction) : undefined };
+}

@@ -3,8 +3,8 @@ import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { Resvg } from '@resvg/resvg-js';
 import { extractPage } from '../lib/plan/extract.ts';
 import { analyzePage } from '../lib/plan/analyze.ts';
-import { cropSvg, roomFacts } from '../lib/plan/crop.ts';
-import { classifyApartment, aiConfig } from '../lib/ai.ts';
+import { cropSvg, roomFacts, pageSvg } from '../lib/plan/crop.ts';
+import { classifyApartment, aiConfig, readTitleBlock } from '../lib/ai.ts';
 import { applyClassification, orderedRooms, compact } from '../lib/plan/classify.ts';
 import { db, ensureSchema } from '../lib/db.ts';
 import { buildArt } from '../lib/plan/art.ts';
@@ -43,7 +43,9 @@ for (const s of SAMPLES) {
     }
   });
   console.log('  AI ok', ok, 'fail', fail);
+  if (an.apts.length === 1) { try { const ps = pageSvg(raw, 1700); const png = new Resvg(ps.svg, { background: '#fff' }).render().asPng(); const tb = await readTitleBlock('data:image/png;base64,' + Buffer.from(png).toString('base64')); if (tb.area || tb.balcony) an.apts[0].declared = { area: tb.area, balcony: tb.balcony }; if (tb.aptNumber) an.apts[0].name = 'דירה ' + tb.aptNumber; console.log('  title block', JSON.stringify(tb)); } catch (e: any) { console.log('  title block failed', e?.message); } }
   const out = compact(an);
+  if (s.abs) await db().query('DELETE FROM vz_plans WHERE NOT is_sample AND name=$1', [s.name]);
   if (!s.abs) await db().query('DELETE FROM vz_plans WHERE is_sample AND source_name=$1', [s.file]);
   const r = await db().query('INSERT INTO vz_plans (name, source_name, analysis, settings, is_sample) VALUES ($1,$2,$3,$4,$5) RETURNING id', [s.name, s.abs ? s.file.split(/[\/]/).pop() : s.file, JSON.stringify(out), JSON.stringify({}), !s.abs]);
   for (const b of an.blds) await db().query('INSERT INTO vz_art (plan_id, bld_id, svg) VALUES ($1,$2,$3) ON CONFLICT (plan_id, bld_id) DO UPDATE SET svg=EXCLUDED.svg', [r.rows[0].id, b.id, buildArt(raw, b.bbox)]);

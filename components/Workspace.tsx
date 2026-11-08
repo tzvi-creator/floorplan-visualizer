@@ -166,9 +166,12 @@ export default function Workspace({ id }: { id: string }) {
             <div className="info-card">
               <h3>{apt.name}{an.blds.length > 1 ? ` · ${bld.name}` : ''}</h3>
               <div className="kv"><span>חדרים</span><b>{stats.rooms}</b></div>
-              <div className="kv"><span>שטח הדירה</span><b>{stats.total.toFixed(1)} מ״ר</b></div>
+              <div className="kv"><span>שטח הדירה (כולל קירות)</span><b>{stats.total.toFixed(1)} מ״ר</b></div>
+              <div className="kv muted"><span>מזה נטו (סכום החדרים)</span><b>{stats.net.toFixed(1)} מ״ר</b></div>
               <div className="kv"><span>שטח מרפסות</span><b>{stats.balcony.toFixed(1)} מ״ר</b></div>
               <div className="kv total"><span>סה״כ כולל מרפסות</span><b>{(stats.total + stats.balcony).toFixed(1)} מ״ר</b></div>
+              {stats.excluded > 0 && <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>לא נכלל בסיכום: {stats.excluded.toFixed(1)} מ״ר</div>}
+              {apt.declared?.area ? <div style={{ fontSize: 12, marginTop: 4, color: Math.abs(stats.total / apt.declared.area - 1) > 0.04 ? '#b42318' : '#2f7d4f' }}>לפי התכנית: {apt.declared.area} מ״ר ({((stats.total / apt.declared.area - 1) * 100).toFixed(1)}%)</div> : null}
             </div>
           )}
         </main>
@@ -215,12 +218,16 @@ function EditPanel({ an, name, setName, apt, room, bldId, mutate, aiApt, aiAll, 
   return (
     <>
       <div className="field"><label>שם התכנית</label><input type="text" value={name} onChange={e => setName(e.target.value)} /></div>
+      <div className="muted" style={{ fontSize: 12 }}>בסיס קנה המידה: {({ manual: 'הוזן ידנית', 'wall-calibrated': 'עובי קירות', 'pen-set': 'עוביי קווים', 'door-widths': 'רוחבי דלתות', 'page-size': 'ניחוש לפי גודל הדף (לא מדויק!)', dimensions: 'מידות מודפסות', 'declared-area': 'שטח מוצהר' } as Record<string, string>)[an.meta.scaleSource || 'page-size']}{an.meta.scaleNote ? ' – ' + an.meta.scaleNote : ''}. 1 נק׳ בקובץ = {an.cmPerPt.toFixed(2)} ס״מ.</div>
       <div className="field"><label>קנה מידה (1 : N) – משפיע על כל המידות והשטחים</label>
         <div className="row"><span>1 :</span><input type="number" min={10} max={1000} value={denom} onChange={e => { const n = +e.target.value; if (n >= 10) mutate(a => { a.cmPerPt = n * 0.03528; }); }} /></div></div>
       <hr style={{ border: 0, borderTop: '1px solid var(--line)', width: '100%' }} />
       {apt && (
         <>
           <div className="field"><label>שם הדירה</label><input type="text" value={apt.name} onChange={e => mutate(a => { const x = a.apts.find(y => y.id === apt.id); if (x) x.name = e.target.value; })} /></div>
+          <div className="field"><label>שטח הדירה לפי התכנית (מ״ר) – לאימות וכיול</label><input type="number" step="0.1" value={apt.declared?.area ?? ''} onChange={e => mutate(a => { const x = a.apts.find(y => y.id === apt.id); if (x) x.declared = { ...x.declared, area: e.target.value ? +e.target.value : undefined }; })} /></div>
+          <div className="field"><label>שטח מרפסת לפי התכנית (מ״ר)</label><input type="number" step="0.1" value={apt.declared?.balcony ?? ''} onChange={e => mutate(a => { const x = a.apts.find(y => y.id === apt.id); if (x) x.declared = { ...x.declared, balcony: e.target.value ? +e.target.value : undefined }; })} /></div>
+          {apt.declared?.area ? <button onClick={() => mutate(a => { const x = a.apts.find(y => y.id === apt.id)!; const cur = aptStats(a, x).total; if (cur > 0 && x.declared?.area) a.cmPerPt = a.cmPerPt * Math.sqrt(x.declared.area / cur); })}>⚖ כייל קנה מידה לפי השטח המוצהר</button> : null}
           <button onClick={aiApt} disabled={!!busy}>✨ זיהוי שמות חדרים בדירה (AI)</button>
         </>
       )}
@@ -246,6 +253,7 @@ function EditPanel({ an, name, setName, apt, room, bldId, mutate, aiApt, aiAll, 
               {apts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
               <option value="__new">+ דירה חדשה</option>
             </select></div>
+          <label className="row" style={{ cursor: 'pointer' }}><input type="checkbox" checked={!!room.excluded} onChange={e => mutate(a => { const r = a.rooms.find(x => x.id === room.id); if (r) r.excluded = e.target.checked; })} style={{ width: 17, height: 17, accentColor: '#c4501b' }} /> שטח שאינו חלק מהדירה (לא נכלל בסיכום השטחים)</label>
           <div className="muted" style={{ fontSize: 13 }}>שטח: {roomArea(an, room).toFixed(2)} מ״ר · {roomDims(an, room).map(fmtDim).join(' × ')} מ׳{isOutdoor(room.type) ? ' · נספר כשטח מרפסת' : ''}</div>
           <button onClick={() => selectApt(bldId, room.aptId)}>סיום עריכת חדר</button>
         </>
@@ -325,8 +333,9 @@ function PrintSheet({ an, bldId, art, apt, layers, view, settings, title, subtit
         {settings.showTable !== false && st && (
           <table><thead><tr><th>חלל</th><th>מידות (מ׳)</th><th>שטח (מ״ר)</th></tr></thead>
             <tbody>
-              {rooms.map(r => <tr key={r.id}><td>{r.name}</td><td>{roomDims(an, r).map(fmtDim).join(' × ')}</td><td>{roomArea(an, r).toFixed(1)}</td></tr>)}
-              <tr className="tot"><td colSpan={2}>שטח הדירה</td><td>{st.total.toFixed(1)}</td></tr>
+              {rooms.filter(r => !r.excluded).map(r => <tr key={r.id}><td>{r.name}</td><td>{roomDims(an, r).map(fmtDim).join(' × ')}</td><td>{roomArea(an, r).toFixed(1)}</td></tr>)}
+              <tr><td colSpan={2}>נטו (סכום החדרים)</td><td>{st.net.toFixed(1)}</td></tr>
+              <tr className="tot"><td colSpan={2}>שטח הדירה (כולל קירות)</td><td>{st.total.toFixed(1)}</td></tr>
               <tr className="tot"><td colSpan={2}>שטח מרפסות</td><td>{st.balcony.toFixed(1)}</td></tr>
             </tbody></table>
         )}

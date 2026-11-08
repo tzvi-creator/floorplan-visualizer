@@ -32,6 +32,8 @@ export const isCommon = (t: string) => t === 'stairs' || t === 'elevator' || t =
 
 export interface RoomT {
   heavy?: number;
+  tile?: number; // density of gray floor-tile grid lines (outdoor floors such as balconies)
+  excluded?: boolean; // user: not part of the apartment (left out of the area summary)
   link?: 'door' | 'bridge'; // bridge = reached only through windows/sliding doors (balconies, shafts)
   id: string; aptId: string | null; bldId: string | null;
   name: string; type: string; auto: boolean; // auto=false => edited by the user
@@ -48,7 +50,7 @@ export function openingKind(an: Analysis, w: WindowT): OpeningKind {
   if (out(A) || out(B)) return w.lenPt * an.cmPerPt > 150 ? 'slider' : 'window';
   return 'door';
 }
-export interface AptT { id: string; bldId: string; name: string; number: number; roomIds: string[]; bbox: Rect }
+export interface AptT { id: string; bldId: string; name: string; number: number; roomIds: string[]; bbox: Rect; declared?: { area?: number; balcony?: number } }
 export interface BldT { id: string; name: string; bbox: Rect; lobbyId: string | null; aptIds: string[]; cores: { x: number; y: number }[]; walls: Rect[] }
 
 export interface Analysis {
@@ -57,7 +59,7 @@ export interface Analysis {
   cmPerPt: number;
   rooms: RoomT[]; apts: AptT[]; blds: BldT[]; doors: DoorT[]; windows: WindowT[];
   warnings: string[];
-  meta: { source?: string; analyzedAt?: string; aiUsed?: boolean; scaleSource?: 'manual' | 'wall-calibrated' | 'page-size' };
+  meta: { source?: string; analyzedAt?: string; aiUsed?: boolean; scaleSource?: 'manual' | 'wall-calibrated' | 'pen-set' | 'door-widths' | 'page-size' | 'dimensions' | 'declared-area'; scaleNote?: string };
 }
 
 export const PT_TO_MM = 25.4 / 72;

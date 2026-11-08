@@ -11,6 +11,7 @@ export function applyClassification(an: Analysis, orderedRoomIds: string[], res:
     if (!TYPE_BY_ID[r.type]) continue;
     let type = r.type, name = r.name || TYPE_BY_ID[r.type].he;
     // rooms reachable only through windows/sliders cannot be bedrooms
+    if ((room.tile || 0) >= 0.05 && !TYPE_BY_ID[type]?.outdoor && type !== 'shaft') { type = 'balcony'; name = 'מרפסת'; }
     if (room.link === 'bridge' && ['bedroom', 'master', 'living', 'kitchen', 'living_kitchen', 'bath', 'master_bath', 'wc'].includes(type)) { type = 'balcony'; name = 'מרפסת'; }
     room.type = type; room.name = name;
   }
