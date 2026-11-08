@@ -15,9 +15,10 @@ export function cropSvg(raw: RawPage, apt: AptT, rooms: RoomT[], widthPx = 1300)
     const a = p.pts[0]; if (a[0] < x0 - 80 || a[0] > x1 + 80 || a[1] < y0 - 80 || a[1] > y1 + 80) continue;
     const c = p.sc;
     const dark = c === '#000000' || (c.length === 7 && parseInt(c.slice(1, 3), 16) < 0xc0 && c.slice(1, 3) === c.slice(3, 5));
-    if (!dark) continue;
+    const red = c.length === 7 && parseInt(c.slice(1, 3), 16) > 190 && parseInt(c.slice(3, 5), 16) < 90 && parseInt(c.slice(5, 7), 16) < 130;
+    if (!dark && !red) continue;
     let d = 'M' + p.pts.map(q => q[0].toFixed(1) + ' ' + q[1].toFixed(1)).join('L'); if (p.closed) d += 'Z';
-    s += `<path d="${d}" fill="none" stroke="${c === '#000000' ? '#000' : '#888'}" stroke-width="${Math.max(0.4, p.lw)}"/>`;
+    s += `<path d="${d}" fill="none" stroke="${red ? '#e00' : c === '#000000' ? '#000' : '#888'}" stroke-width="${Math.max(0.4, p.lw)}"/>`;
   }
   rooms.forEach((r, i) => {
     const col = COLORS[i % COLORS.length];
