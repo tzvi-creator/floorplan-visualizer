@@ -3,9 +3,9 @@ node_modules
 .env*
 !.env.example
 .vercel
-tmp
-plans
-legacy
+/tmp
+/plans
+/legacy
 *.pdf
 next-env.d.ts
 *.tsbuildinfo
