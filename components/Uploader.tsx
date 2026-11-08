@@ -5,6 +5,7 @@ import { extractPage } from '@/lib/plan/extract';
 import { analyzePage, guessScaleDenom } from '@/lib/plan/analyze';
 import { classifyAll } from '@/lib/plan/clientAi';
 import { compact } from '@/lib/plan/classify';
+import { buildArt } from '@/lib/plan/art';
 
 const tick = () => new Promise(r => setTimeout(r, 30));
 
@@ -48,6 +49,11 @@ export default function Uploader() {
       setStage('שומר…'); setPct(95);
       const r = await fetch('/api/plans', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: name || file.name, source: file.name, analysis: compact(an) }) });
       const j = await r.json(); if (!r.ok) throw new Error(j.error || 'שמירה נכשלה');
+      setStage('שומר את התכנית המקורית להשוואה…');
+      for (let i = 0; i < an.blds.length; i++) {
+        const b = an.blds[i]; setPct(96 + Math.round((i / an.blds.length) * 3));
+        await fetch('/api/plans/' + j.id + '/art', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ bldId: b.id, svg: buildArt(raw, b.bbox) }) }).catch(() => {});
+      }
       router.push('/plan/' + j.id);
     } catch (e: any) { setErr(e?.message || 'שגיאה בעיבוד'); setBusy(false); setStage(''); }
   }

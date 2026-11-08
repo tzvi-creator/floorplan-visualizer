@@ -57,7 +57,7 @@ export interface Analysis {
   cmPerPt: number;
   rooms: RoomT[]; apts: AptT[]; blds: BldT[]; doors: DoorT[]; windows: WindowT[];
   warnings: string[];
-  meta: { source?: string; analyzedAt?: string; aiUsed?: boolean };
+  meta: { source?: string; analyzedAt?: string; aiUsed?: boolean; scaleSource?: 'manual' | 'wall-calibrated' | 'page-size' };
 }
 
 export const PT_TO_MM = 25.4 / 72;

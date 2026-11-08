@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic';
 import type { Analysis, Rect } from '@/lib/plan/types';
 import { ROOM_TYPES, TYPE_BY_ID, isOutdoor } from '@/lib/plan/types';
 import { aptRooms, aptStats, roomArea, roomDims, fmtDim, planSummary, rebuildApts, scopeData, roomById } from '@/lib/plan/geom';
-import { DEFAULT_LAYERS, LAYER_LABELS, type Layers, type PlanSettings } from '@/lib/plan/layers';
+import { DEFAULT_LAYERS, LAYER_LABELS, LAYER_PRESETS, type Layers, type PlanSettings } from '@/lib/plan/layers';
 import { classifyOne, classifyAll } from '@/lib/plan/clientAi';
 import { compact } from '@/lib/plan/classify';
 import PlanSvg from './PlanSvg';
@@ -30,6 +30,7 @@ export default function Workspace({ id }: { id: string }) {
   const [dirty, setDirty] = useState(false); const [saving, setSaving] = useState<'' | 'saving' | 'saved' | 'error'>('');
   const [printOpen, setPrintOpen] = useState(false); const [snap, setSnap] = useState('');
   const [busy, setBusy] = useState(''); const [toast, setToast] = useState('');
+  const [arts, setArts] = useState<Record<string, string>>({});
   const snapRef = useRef<(() => string) | null>(null);
   const loaded = useRef(false);
 
@@ -38,7 +39,7 @@ export default function Workspace({ id }: { id: string }) {
       const j = await r.json(); if (!r.ok) throw new Error(j.error || 'שגיאה בטעינה');
       const a: Analysis = j.analysis; setAn(a); setName(j.name); setSettings(j.settings || {});
       const b = a.blds.find(x => x.aptIds.length) || a.blds[0];
-      setSel({ bld: b?.id || '', apt: b?.aptIds[0] || null, room: null });
+      if (a.blds.length === 1) setSel({ bld: '*', apt: null, room: null }); else setSel({ bld: b?.id || '', apt: b?.aptIds[0] || null, room: null });
       setTimeout(() => { loaded.current = true; }, 0);
     }).catch(e => setLoadErr(e.message));
   }, [id]);
@@ -66,12 +67,23 @@ export default function Workspace({ id }: { id: string }) {
   const apt = an?.apts.find(a => a.id === sel.apt) || null;
   const room = an && sel.room ? roomById(an, sel.room) : undefined;
   const bld = an?.blds.find(b => b.id === sel.bld) || an?.blds[0];
+  const scopeBld = sel.bld === '*' ? '*' : bld?.id || '';
 
-  const home: Rect = useMemo(() => (an && bld ? scopeData(an, bld.id, apt ? apt.id : null).box : [0, 0, 100, 100]), [an, bld, apt]);
+  const home: Rect = useMemo(() => (an && bld ? scopeData(an, scopeBld, apt ? apt.id : null).box : [0, 0, 100, 100]), [an, bld, apt, scopeBld]);
   const wallHeight = settings.wallHeight ?? 2.6;
 
   const selectApt = (b: string, a: string | null) => setSel({ bld: b, apt: a, room: null });
-  const selectRoom = (rid: string) => { if (!an) return; const r = roomById(an, rid); if (!r) return; setSel({ bld: r.bldId || sel.bld, apt: r.aptId || sel.apt, room: rid }); };
+  const selectRoom = (rid: string) => { if (!an) return; const r = roomById(an, rid); if (!r) return; setSel(s => s.bld === '*' ? { ...s, room: rid } : { bld: r.bldId || s.bld, apt: r.aptId || s.apt, room: rid }); };
+
+  // original linework (underlay) loaded on demand per building
+  const needIds = useMemo(() => (!an ? [] : sel.bld === '*' ? an.blds.map(b => b.id) : [bld?.id || '']), [an, sel.bld, bld]);
+  useEffect(() => {
+    if (!an || !layers.original || view === '3d') return;
+    const miss = needIds.filter(i => i && !(i in arts)); if (!miss.length) return;
+    fetch('/api/plans/' + id + '/art?bld=' + miss.join(',')).then(r => r.json()).then(j => setArts(a => { const n = { ...a }; for (const i of miss) n[i] = j[i] || ''; return n; })).catch(() => {});
+  }, [an, layers.original, view, needIds, arts, id]);
+  const art = needIds.map(i => arts[i] || '').join('');
+  const hasArt = needIds.some(i => arts[i]);
 
   useEffect(() => { if (view === 'mkt') setLayers(l => (l.furniture ? l : { ...l, furniture: true })); }, [view]);
 
@@ -80,7 +92,7 @@ export default function Workspace({ id }: { id: string }) {
   if (!bld) return <div className="center-card"><div className="card"><div>לא זוהו בניינים או דירות בתכנית.</div><p><Link href="/">חזרה</Link></p></div></div>;
 
   const stats = apt ? aptStats(an, apt) : null;
-  const title = settings.title ?? (apt ? `${apt.name}${an.blds.length > 1 ? ' – ' + bld.name : ''}` : bld.name);
+  const title = settings.title ?? (apt ? `${apt.name}${an.blds.length > 1 ? ' – ' + bld.name : ''}` : sel.bld === '*' ? name : bld.name);
   const subtitle = settings.subtitle ?? name;
 
   async function openPrint() {
@@ -125,8 +137,9 @@ export default function Workspace({ id }: { id: string }) {
             {tab === 'tree' && <Tree an={an} sel={sel} selectApt={selectApt} selectRoom={selectRoom} />}
             {tab === 'layers' && (
               <div className="checks">
+                <div className="chips" style={{ marginBottom: 6 }}>{LAYER_PRESETS.map(p => <button key={p.he} onClick={() => setLayers(p.layers)}>{p.he}</button>)}</div>
                 {LAYER_LABELS.map(l => <label key={l.key}><input type="checkbox" checked={layers[l.key]} onChange={e => setLayers({ ...layers, [l.key]: e.target.checked })} />{l.he}</label>)}
-                <div className="muted" style={{ fontSize: 13, padding: '6px 6px 0' }}>הכיבוי/הדלקה חל על כל התצוגות וגם על ההדפסה.</div>
+                <div className="muted" style={{ fontSize: 13, padding: '6px 6px 0' }}>הכיבוי/הדלקה חל על כל התצוגות וגם על ההדפסה. התכנית המקורית מוצגת בתצוגת ״תכנית״ בלבד.{!hasArt && layers.original ? ' (התכנית המקורית לא שמורה בתכנית זו או שעדיין נטענת)' : ''}</div>
               </div>
             )}
             {tab === 'edit' && <EditPanel an={an} name={name} setName={n => { setName(n); setDirty(true); }} apt={apt} room={room} bldId={bld.id} mutate={mutate} aiApt={aiApt} aiAll={aiAll} busy={busy} selectApt={selectApt} />}
@@ -140,12 +153,12 @@ export default function Workspace({ id }: { id: string }) {
           {toast && <div className="banner" style={{ background: '#e3f4e8', borderColor: '#9fd2ae', color: '#1d5a35' }}>{toast}</div>}
           {view !== '3d' && (
             <Viewport home={home}>
-              {vb => <PlanSvg an={an} bldId={bld.id} aptId={apt ? apt.id : null} layers={layers} style={view === 'mkt' ? 'mkt' : 'tech'} selectedRoom={sel.room} onRoomClick={selectRoom} viewBox={vb} />}
+              {vb => <PlanSvg an={an} bldId={scopeBld} aptId={apt ? apt.id : null} layers={layers} style={view === 'mkt' ? 'mkt' : 'tech'} selectedRoom={sel.room} onRoomClick={selectRoom} viewBox={vb} art={art} />}
             </Viewport>
           )}
           {view === '3d' && (
             <>
-              <View3D an={an} bldId={bld.id} aptId={apt ? apt.id : null} wallHeight={wallHeight} layers={layers} selectedRoom={sel.room} onRoomClick={selectRoom} snapRef={snapRef} />
+              <View3D an={an} bldId={scopeBld} aptId={apt ? apt.id : null} wallHeight={wallHeight} layers={layers} selectedRoom={sel.room} onRoomClick={selectRoom} snapRef={snapRef} />
               <div className="hud"><label htmlFor="wh">גובה קירות</label><input id="wh" type="range" min={0.3} max={3.2} step={0.05} value={wallHeight} onChange={e => patchSettings({ wallHeight: +e.target.value })} /><b style={{ minWidth: 54, fontVariantNumeric: 'tabular-nums' }}>{wallHeight.toFixed(2)} מ׳</b></div>
             </>
           )}
@@ -162,7 +175,7 @@ export default function Workspace({ id }: { id: string }) {
       </div>
 
       {printOpen && <PrintModal an={an} settings={settings} title={title} subtitle={subtitle} apt={apt} patch={patchSettings} onClose={() => setPrintOpen(false)} onPrint={doPrint} />}
-      <PrintSheet an={an} bldId={bld.id} apt={apt} layers={layers} view={view} settings={settings} title={title} subtitle={subtitle} snap={snap} />
+      <PrintSheet an={an} bldId={scopeBld} art={art} apt={apt} layers={layers} view={view} settings={settings} title={title} subtitle={subtitle} snap={snap} />
       <style>{`@page { size: A4 ${settings.orientation === 'portrait' ? 'portrait' : 'landscape'}; margin: 10mm; }`}</style>
     </>
   );
@@ -171,6 +184,7 @@ export default function Workspace({ id }: { id: string }) {
 function Tree({ an, sel, selectApt, selectRoom }: { an: Analysis; sel: Sel; selectApt: (b: string, a: string | null) => void; selectRoom: (r: string) => void }) {
   return (
     <div className="tree">
+      <div className={'leaf' + (sel.bld === '*' && !sel.room ? ' sel' : '')} onClick={() => selectApt('*', null)} style={{ fontWeight: 600, marginBottom: 4 }}><span>🗺 כל התכנית (סקירה על גבי המקור)</span><span className="pill">{an.apts.length} דירות</span></div>
       {an.blds.map(b => (
         <details key={b.id} open>
           <summary onClick={() => selectApt(b.id, null)} className={sel.bld === b.id && !sel.apt ? 'sel' : ''}><b>{b.name}</b><span className="pill">{b.aptIds.length} דירות</span></summary>
@@ -296,7 +310,7 @@ function PrintModal({ an, settings, title, subtitle, apt, patch, onClose, onPrin
   );
 }
 
-function PrintSheet({ an, bldId, apt, layers, view, settings, title, subtitle, snap }: { an: Analysis; bldId: string; apt: Analysis['apts'][number] | null; layers: Layers; view: ViewKind; settings: PlanSettings; title: string; subtitle: string; snap: string }) {
+function PrintSheet({ an, bldId, art, apt, layers, view, settings, title, subtitle, snap }: { an: Analysis; bldId: string; art: string; apt: Analysis['apts'][number] | null; layers: Layers; view: ViewKind; settings: PlanSettings; title: string; subtitle: string; snap: string }) {
   const st = apt ? aptStats(an, apt) : null;
   const rooms = apt ? aptRooms(an, apt).sort((p, q) => q.areaPt2 - p.areaPt2) : [];
   const portrait = settings.orientation === 'portrait';
@@ -304,7 +318,7 @@ function PrintSheet({ an, bldId, apt, layers, view, settings, title, subtitle, s
     <div className="print-sheet" dir="rtl" style={{ ['--fig-h' as any]: portrait ? '170mm' : '112mm' }}>
       <div className="ps-head"><div><h1>{title}</h1><div className="ps-sub">{subtitle}</div></div>{st && <div style={{ textAlign: 'start' }}><b style={{ fontSize: '16pt' }}>{st.rooms} חדרים</b><div>{st.total.toFixed(1)} מ״ר + מרפסות {st.balcony.toFixed(1)} מ״ר</div></div>}</div>
       <div className="ps-fig">
-        {view === '3d' ? (snap ? <img src={snap} alt="הדמיה תלת־ממדית" /> : null) : <PlanSvg an={an} bldId={bldId} aptId={apt ? apt.id : null} layers={layers} style={view === 'mkt' ? 'mkt' : 'tech'} />}
+        {view === '3d' ? (snap ? <img src={snap} alt="הדמיה תלת־ממדית" /> : null) : <PlanSvg an={an} bldId={bldId} aptId={apt ? apt.id : null} layers={layers} style={view === 'mkt' ? 'mkt' : 'tech'} art={art} />}
       </div>
       <div className="ps-cols">
         <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{settings.description}</div>

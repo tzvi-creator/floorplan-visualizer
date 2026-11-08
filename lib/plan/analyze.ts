@@ -14,6 +14,51 @@ export interface AnalyzeOptions { neckCm?: number; cmPerPt?: number; scaleDenom?
 
 interface Reg { id: number; area: number; per: number; x0: number; y0: number; x1: number; y1: number; sx: number; sy: number; border: boolean; cavity: boolean; hatch: number; heavy: number; bnd: number }
 
+/** pen-width factor of the drawing relative to the CAD pen set used in the samples (heavy wall pen 1.08pt) */
+export function penFactor(raw: RawPage): number {
+  const cnt = new Map<string, number>();
+  for (const p of raw.paths) if (p.stroke && isDark(p.sc)) { const k = p.lw.toFixed(2); cnt.set(k, (cnt.get(k) || 0) + 1); }
+  const widths = [...cnt.entries()].filter(([k, n]) => n >= 100 && +k >= 0.15).map(([k]) => +k).sort((a, b) => b - a);
+  if (!widths.length) return 1;
+  const f = widths[0] / 1.08;
+  return f < 0.9 && f > 0.25 ? f : 1;
+}
+
+/** estimate cm per point from the most common wall thickness (10cm partitions / 20cm walls) */
+export function calibrateByWalls(raw: RawPage, pen: number): number | null {
+  const minLw = 0.55 * pen;
+  const H: { k: number; a: number; b: number }[] = [], V: { k: number; a: number; b: number }[] = [];
+  for (const p of raw.paths) {
+    if (!p.stroke || !isDark(p.sc) || p.lw < minLw || p.pts.length !== 2) continue;
+    const [a, b] = p.pts;
+    if (Math.abs(a[1] - b[1]) < 0.2 && Math.abs(a[0] - b[0]) > 30 * pen) H.push({ k: a[1], a: Math.min(a[0], b[0]), b: Math.max(a[0], b[0]) });
+    else if (Math.abs(a[0] - b[0]) < 0.2 && Math.abs(a[1] - b[1]) > 30 * pen) V.push({ k: a[0], a: Math.min(a[1], b[1]), b: Math.max(a[1], b[1]) });
+  }
+  const hist = new Map<number, number>(); // bin = 0.25pt, raw points
+  for (const L of [H, V]) {
+    L.sort((p, q) => p.k - q.k);
+    for (let i = 0; i < L.length; i++) for (let j = i + 1; j < L.length; j++) {
+      const d = L[j].k - L[i].k; if (d > 30 * pen) break; if (d < 1.5 * pen) continue;
+      if (Math.min(L[i].b, L[j].b) - Math.max(L[i].a, L[j].a) < 25 * pen) continue;
+      const bin = Math.round(d * 4) / 4; hist.set(bin, (hist.get(bin) || 0) + 1);
+    }
+  }
+  if (process.env.DBG) console.log('calib hist', [...hist.entries()].sort((a, b) => a[0] - b[0]).filter(([, n]) => n >= 2).map(([d, n]) => d + ':' + n).join(' '));
+  // smooth and find peaks
+  const bins = [...hist.keys()].sort((a, b) => a - b);
+  const sm = (x: number) => { let t = 0; for (let d = -0.5; d <= 0.5; d += 0.25) t += hist.get(Math.round((x + d) * 4) / 4) || 0; return t; };
+  const peaks: { d: number; n: number }[] = [];
+  const hv = (x: number) => hist.get(Math.round(x * 4) / 4) || 0;
+  for (const x of bins) { const n = sm(x); let isMax = true; for (let d = -0.75; d <= 0.75; d += 0.25) { const o = hv(x + d); if (o > hv(x) || (o === hv(x) && d < 0)) isMax = false; } if (n >= 6 && isMax) peaks.push({ d: x, n }); }
+  let best: { big: number; score: number } | null = null;
+  for (const a of peaks) for (const b of peaks) {
+    const r = b.d / a.d; if (r < 1.8 || r > 2.2) continue;
+    const score = a.n + b.n; if (!best || score > best.score) best = { big: b.d, score };
+  }
+  if (!best) return null;
+  return 20 / best.big;
+}
+
 export function guessScaleDenom(page: { w: number; h: number }): number {
   const mmW = Math.max(page.w, page.h) * PT_TO_MM;
   if (mmW > 1000) return 50;     // A0/A1 sheets: usually 1:50
@@ -25,11 +70,15 @@ export function guessScaleDenom(page: { w: number; h: number }): number {
 export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
   const log = opt.onProgress || (() => {});
   const denom = opt.scaleDenom || guessScaleDenom({ w: raw.width, h: raw.height });
-  const cmPerPt = opt.cmPerPt || (PT_TO_MM * denom) / 10;
+  const guessCm = (PT_TO_MM * denom) / 10;
+  const pen = penFactor(raw);
+  let cmPerPt = opt.cmPerPt || guessCm; let scaleSource: 'manual' | 'wall-calibrated' | 'page-size' = opt.cmPerPt || opt.scaleDenom ? 'manual' : 'page-size';
+  if (scaleSource === 'page-size') { const c = calibrateByWalls(raw, pen); if (c && Math.abs(c / guessCm - 1) > 0.12) { cmPerPt = c; scaleSource = 'wall-calibrated'; } }
+  const K = 1.764 / cmPerPt; // converts "A0 @ 1:50 points" constants to this drawing's points
   const warnings: string[] = [];
 
   // ---------- raster of walls ----------
-  const res = Math.max(1, Math.sqrt((raw.width * raw.height) / 9e6));
+  const res = Math.max(Math.min(1, 2.2 / cmPerPt), Math.sqrt((raw.width * raw.height) / 9e6));
   const W = Math.ceil(raw.width / res), H = Math.ceil(raw.height / res);
   const mask = new Uint8Array(W * H); // bit1 solid, bit2 heavy, bit4 door chord
   const S = 1 / res;
@@ -48,8 +97,8 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
       if (e2 < dx) { err += dx; y0 += sy; }
     }
   };
-  const MINLW = 0.55;
-  const stairRuns = findStairs(raw.paths, cmPerPt);
+  const MINLW = 0.55 * pen;
+  const stairRuns = findStairs(raw.paths, cmPerPt, pen);
   const inStair = (p: RawPath) => { if (p.pts.length !== 2) return false; for (const s of stairRuns) { if (p.pts.every(q => q[0] > s.x0 - 2 && q[0] < s.x1 + 2 && q[1] > s.y0 - 2 && q[1] < s.y1 + 2)) return true; } return false; };
   for (const p of raw.paths) {
     if (!p.stroke || !isDark(p.sc) || p.lw < MINLW) continue;
@@ -78,13 +127,13 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
           const k = yy * W + xx; if ((mask[k] & 1) && !seen[k]) { seen[k] = 1; stack[sp++] = k; }
         }
       }
-      if (Math.max(x1 - x0, y1 - y0) * res < 48) for (const j of comp) mask[j] = 0;
+      if (Math.max(x1 - x0, y1 - y0) * res < 48 * K) for (const j of comp) mask[j] = 0;
     }
   }
 
   // ---------- door arcs -> chords ----------
   log('מזהה פתחי דלתות');
-  const found = findDoors(raw.paths, cmPerPt);
+  const found = findDoors(raw.paths, cmPerPt, pen, K);
   const hasSolidNear = (x: number, y: number, rad: number) => {
     const cx = Math.round(x * S), cy = Math.round(y * S), r = Math.ceil(rad * S);
     for (let j = -r; j <= r; j++) for (let i = -r; i <= r; i++) { const xx = cx + i, yy = cy + j; if (xx >= 0 && yy >= 0 && xx < W && yy < H && (mask[yy * W + xx] & 1)) return true; }
@@ -101,13 +150,13 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
   }
   // dedupe doors
   const doorsU: DoorRaw[] = [];
-  for (const d of doorsRaw) if (!doorsU.some(o => Math.hypot(o.hx - d.hx, o.hy - d.hy) < 4 && Math.hypot(o.ex - d.ex, o.ey - d.ey) < 4)) doorsU.push(d);
+  for (const d of doorsRaw) if (!doorsU.some(o => Math.hypot(o.hx - d.hx, o.hy - d.hy) < 4 * K && Math.hypot(o.ex - d.ex, o.ey - d.ey) < 4 * K)) doorsU.push(d);
   for (const d of doorsU) line(d.hx, d.hy, d.ex, d.ey, 2, 4);
   // gaps between wall stubs with no door symbol (open doorways)
   {
     const cmPx = cmPerPt * res; // cm per pixel
     const wmin = Math.round(58 / cmPx), wmax = Math.round(128 / cmPx);
-    const tmin = Math.max(2, Math.round(3.5 / res)), tmax = Math.round(34 / res);
+    const tmin = Math.max(2, Math.round(3.5 * K / res)), tmax = Math.round(34 * K / res);
     const found2: DoorRaw[] = [];
     const scan = (horiz: boolean) => {
       const A = horiz ? H : W, B = horiz ? W : H; // A = number of rows(lines), B = line length
@@ -142,7 +191,7 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
       }
     };
     scan(true); scan(false);
-    for (const d of found2) { if (!doorsU.some(o => Math.hypot((o.hx + o.ex) / 2 - (d.hx + d.ex) / 2, (o.hy + o.ey) / 2 - (d.hy + d.ey) / 2) < 12)) { doorsU.push(d); line(d.hx, d.hy, d.ex, d.ey, 2, 4); } }
+    for (const d of found2) { if (!doorsU.some(o => Math.hypot((o.hx + o.ex) / 2 - (d.hx + d.ex) / 2, (o.hy + o.ey) / 2 - (d.hy + d.ey) / 2) < 12 * K)) { doorsU.push(d); line(d.hx, d.hy, d.ex, d.ey, 2, 4); } }
   }
 
   // ---------- label free regions ----------
@@ -166,8 +215,19 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
       if (y < H - 1) { const k = j + W; if (mask[k] & 5) edge = true; else if (!labels[k]) { labels[k] = id; stack[sp++] = k; } }
       if (edge) r.per++;
     }
-    r.cavity = !r.border && (2 * r.area / Math.max(1, r.per)) * res < 20 / 1; // mean width < 20pt
+    r.cavity = !r.border && (2 * r.area / Math.max(1, r.per)) * res < 20 * K; // mean width < 35cm
     regs.push(r);
+  }
+  {
+    let cx0 = W, cy0 = H, cx1 = 0, cy1 = 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (mask[y * W + x] & 1) { if (x < cx0) cx0 = x; if (x > cx1) cx1 = x; if (y < cy0) cy0 = y; if (y > cy1) cy1 = y; }
+    const tx = Math.max(4, (cx1 - cx0) * 0.02), ty = Math.max(4, (cy1 - cy0) * 0.02);
+    for (const r of regs) {
+      if (r.id <= 0 || r.cavity) continue;
+      const sides = (r.x0 <= cx0 + tx ? 1 : 0) + (r.x1 >= cx1 - tx ? 1 : 0) + (r.y0 <= cy0 + ty ? 1 : 0) + (r.y1 >= cy1 - ty ? 1 : 0);
+      const big = r.area * res * res * cmPerPt * cmPerPt / 10000;
+      if (sides >= 3 && big > 4) { r.border = true; r.cavity = false; }
+    }
   }
   // ----- split regions at narrow necks (doorways without symbols) via distance-transform cores -----
   {
@@ -247,7 +307,7 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
   for (const p of raw.paths) {
     if (!p.stroke || p.pts.length !== 2 || p.lw >= MINLW || !isDark(p.sc)) continue;
     const [a, b] = p.pts; const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy);
-    if (L < 3 || L > 90) continue;
+    if (L < 3 * K || L > 90 * K) continue;
     const ang = Math.abs(Math.atan2(Math.abs(dy), Math.abs(dx)) * 180 / Math.PI);
     if (ang < 22 || ang > 68) continue;
     line(a[0], a[1], b[0], b[1], 1, 0, (x, y) => { if (x >= 0 && y >= 0 && x < W && y < H) { const l = labels[y * W + x]; if (l) regs[l].hatch++; } });
@@ -266,7 +326,7 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
   const addAdj = (a: number, b: number) => { if (a === b) return; const k = a < b ? a * N + b : b * N + a; adj.set(k, (adj.get(k) || 0) + 1); };
   const neck = new Map<number, number>();
   const addNeck = (a: number, b: number) => { const k = a < b ? a * N + b : b * N + a; neck.set(k, (neck.get(k) || 0) + 1); };
-  const maxRun = Math.ceil(5 / res) + 1;
+  const maxRun = Math.ceil(5 * K / res) + 1;
   for (let y = 0; y < H; y++) {
     let last = 0, run = 0;
     for (let x = 0; x < W; x++) {
@@ -301,9 +361,9 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
     if (!r.cavity || r.area < 12) continue;
     const meanW = (2 * r.area / Math.max(1, r.per)) * res;
     const lenPt = Math.max(r.x1 - r.x0, r.y1 - r.y0) * res;
-    if (meanW < 8.2 || lenPt < 24) continue;
+    if (meanW < 8.2 * K || lenPt < 24 * K) continue;
     if (r.hatch / r.area > 0.04) continue;
-    if (Math.min((r.x1 - r.x0 + 1) * res, (r.y1 - r.y0 + 1) * res) > 40) continue;
+    if (Math.min((r.x1 - r.x0 + 1) * res, (r.y1 - r.y0 + 1) * res) > 40 * K) continue;
     const ns = nb.get(r.id); if (!ns) continue;
     const list = [...ns.entries()].filter(([n]) => !regs[n].cavity).sort((p, q) => q[1] - p[1]);
     if (!list.length) continue;
@@ -345,7 +405,7 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
   }
   const regArea = (id: number) => regs[id].area * res * res * cmPerPt * cmPerPt / 10000; // m2
   const doorGraph = new Map<number, Set<number>>();
-  const farEdge = (a: number, b: number) => Math.hypot((regs[a].sx / regs[a].area - regs[b].sx / regs[b].area) * res, (regs[a].sy / regs[a].area - regs[b].sy / regs[b].area) * res) > 560;
+  const farEdge = (a: number, b: number) => Math.hypot((regs[a].sx / regs[a].area - regs[b].sx / regs[b].area) * res, (regs[a].sy / regs[a].area - regs[b].sy / regs[b].area) * res) > 560 * K;
   for (const d of doors) {
     if (!d.ra || !d.rb || d.ra === d.rb) continue;
     if (farEdge(d.ra, d.rb)) continue;
@@ -364,7 +424,7 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
   for (const r of regs) {
     if (!r.cavity || r.area < 6) continue;
     const meanW = (2 * r.area / Math.max(1, r.per)) * res;
-    if (meanW >= 8.4) continue;
+    if (meanW >= 8.4 * K) continue;
     const ns = nb.get(r.id); if (!ns) continue;
     const list = [...ns.entries()].filter(([n, w]) => !regs[n].cavity && isRoomReg(regs[n]) && w >= 4).map(([n]) => n);
     for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
@@ -399,7 +459,7 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
     let lobby = 0, best = 0;
     for (const r of roomRegs) {
       const [cx, cy] = centerOf(r);
-      if (Math.hypot(cx - c.x, cy - c.y) > 450 || regArea(r.id) < 4) continue;
+      if (Math.hypot(cx - c.x, cy - c.y) > 450 * K || regArea(r.id) < 4) continue;
       const nbs = new Set(edgesOf(r.id).filter(n => isRoomReg(regs[n])));
       const score = nbs.size * 1000 + Math.min(999, regArea(r.id));
       if (score > best) { best = score; lobby = r.id; }
@@ -408,7 +468,7 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
     // stairwell: regions inside the stair bbox, plus small neighbours connected to them
     const stairSet = new Set<number>();
     for (const r of roomRegs) { if (r.id === lobby) continue; const [cx, cy] = centerOf(r); if (cx > sb[0] - 4 && cx < sb[2] + 4 && cy > sb[1] - 4 && cy < sb[3] + 4) stairSet.add(r.id); }
-    let grew = true; while (grew) { grew = false; for (const id of [...stairSet]) for (const n of edgesOf(id)) { if (stairSet.has(n) || n === lobby || !isRoomReg(regs[n]) || regArea(n) > 12) continue; const [cx, cy] = centerOf(regs[n]); if (Math.hypot(cx - c.x, cy - c.y) > 230) continue; stairSet.add(n); grew = true; } }
+    let grew = true; while (grew) { grew = false; for (const id of [...stairSet]) for (const n of edgesOf(id)) { if (stairSet.has(n) || n === lobby || !isRoomReg(regs[n]) || regArea(n) > 12) continue; const [cx, cy] = centerOf(regs[n]); if (Math.hypot(cx - c.x, cy - c.y) > 230 * K) continue; stairSet.add(n); grew = true; } }
     blds.push({ cx: c.x, cy: c.y, lobby, stairs: stairSet.size ? [...stairSet][0] : 0 });
     (blds[blds.length - 1] as any).stairSet = stairSet;
   }
@@ -433,7 +493,7 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
     for (const start of roomRegs) {
       const sid = start.id;
       if (visited.has(sid) || blocked.has(sid) || compOf.has(sid)) continue;
-      if (Math.hypot(centerOf(start)[0] - b.cx, centerOf(start)[1] - b.cy) > 1100) continue;
+      if (Math.hypot(centerOf(start)[0] - b.cx, centerOf(start)[1] - b.cy) > 1100 * K) continue;
       const comp: number[] = []; const q = [sid]; compOf.set(sid, sid);
       while (q.length) {
         const r = q.pop()!; comp.push(r);
@@ -441,14 +501,14 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
       }
       const touches = comp.some(r => lobbyN.has(r));
       const tot = comp.reduce((sum, r) => sum + regArea(r), 0);
-      if (!touches || tot < 18) continue;
+      if (!touches || tot < 25 || !comp.some(r => regArea(r) >= 12)) continue;
       for (const r of comp) visited.add(r);
       // several distinct lobby entrances inside one component => split by nearest entrance (graph distance)
       const compSet = new Set(comp);
       const seeds = comp.filter(r => lobbyDirect.has(r) && regArea(r) >= 0.8);
       const clusters: number[][] = [];
       for (const sd of seeds) {
-        const c = clusters.find(cl => cl.some(o => { const A = centerOf(regs[o]), B = centerOf(regs[sd]); return Math.hypot(A[0] - B[0], A[1] - B[1]) < 230; }));
+        const c = clusters.find(cl => cl.some(o => { const A = centerOf(regs[o]), B = centerOf(regs[sd]); return Math.hypot(A[0] - B[0], A[1] - B[1]) < 230 * K; }));
         if (c) c.push(sd); else clusters.push([sd]);
       }
       if (clusters.length < 2) { apartments.push({ bld: bi, regs: comp }); continue; }
@@ -461,20 +521,26 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
       }
       const parts: number[][] = clusters.map(() => []);
       for (const r of comp) parts[own.has(r) ? own.get(r)! : 0].push(r);
-      for (const p of parts) { if (p.reduce((sum, r) => sum + regArea(r), 0) >= 12) apartments.push({ bld: bi, regs: p }); else for (const r of p) assign.set(r, { bld: bi, apt: null, role: 'common' }); }
+      const okPart = (p: number[]) => p.reduce((sum, r) => sum + regArea(r), 0) >= 25 && p.some(r => regArea(r) >= 12);
+      const good = parts.filter(okPart);
+      if (good.length < 2) { apartments.push({ bld: bi, regs: comp }); continue; }
+      const bad = parts.filter(p => !okPart(p)).flat();
+      good.sort((a, b) => b.reduce((s2, r) => s2 + regArea(r), 0) - a.reduce((s2, r) => s2 + regArea(r), 0));
+      good[0].push(...bad);
+      for (const p of good) apartments.push({ bld: bi, regs: p });
     }
   });
-  if (!blds.length) { // fallback: no core -> connected components by doors
+  if (!blds.length) { // fallback: no stair core -> rooms joined by doors, open necks, thin partitions and window frames form apartments
     const comps: number[][] = [];
     for (const r of roomRegs) {
       if (visited.has(r.id)) continue;
       const comp: number[] = []; const q = [r.id]; visited.add(r.id);
-      while (q.length) { const x = q.pop()!; comp.push(x); for (const n of doorGraph.get(x) || []) if (!visited.has(n) && isRoomReg(regs[n])) { visited.add(n); q.push(n); } }
+      while (q.length) { const x = q.pop()!; comp.push(x); for (const g of [doorGraph, partGraph, cellGraph]) for (const n of g.get(x) || []) if (!visited.has(n) && isRoomReg(regs[n])) { visited.add(n); q.push(n); } }
       comps.push(comp);
     }
     blds.push({ cx: 0, cy: 0, lobby: 0, stairs: 0 });
-    for (const c of comps) if (c.length >= 3 || c.reduce((s, r) => s + regArea(r), 0) > 25) apartments.push({ bld: 0, regs: c });
-    warnings.push('לא זוהתה ליבת בניין (מדרגות/מעלית) – הדירות זוהו לפי חיבורי דלתות');
+    for (const c of comps) if (c.reduce((sum, r) => sum + regArea(r), 0) >= 25 && c.some(r => regArea(r) >= 12)) apartments.push({ bld: 0, regs: c });
+    warnings.push('לא זוהתה ליבת בניין (מדרגות/לובי) – הדירות זוהו לפי חיבורי דלתות וקירות');
   }
   apartments.forEach((a, ai) => a.regs.forEach(r => assign.set(r, { bld: a.bld, apt: ai })));
   // attach orphan regions (balconies, storage, shafts) by shared wall length
@@ -584,7 +650,7 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
   // ---------- wall rectangles per building ----------
   log('בונה קירות');
   for (const b of bldsOut) {
-    const pad = 36;
+    const pad = 36 * K;
     const x0 = Math.max(0, Math.floor((b.bbox[0] - pad) / res)), y0 = Math.max(0, Math.floor((b.bbox[1] - pad) / res));
     const x1 = Math.min(W - 1, Math.ceil((b.bbox[2] + pad) / res)), y1 = Math.min(H - 1, Math.ceil((b.bbox[3] + pad) / res));
     const rs = rectsFrom((x, y) => {
@@ -599,7 +665,7 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
   const out: Analysis = {
     version: 1, page: { w: raw.width, h: raw.height }, cmPerPt,
     rooms, apts: aptsOut, blds: bldsOut, doors: doorsOut, windows, warnings,
-    meta: { source: opt.source, analyzedAt: new Date().toISOString(), aiUsed: false },
+    meta: { source: opt.source, analyzedAt: new Date().toISOString(), aiUsed: false, scaleSource },
   };
   heuristicNames(out);
   stripRegion(out);
@@ -629,24 +695,24 @@ function rectsFrom(pred: (x: number, y: number) => boolean, x0: number, y0: numb
 
 export interface DoorRaw { hx: number; hy: number; ex: number; ey: number; r: number; sx: number; sy: number }
 // Doors are drawn as a thin leaf rectangle (open 90deg) plus a (usually dashed) swing arc around the hinge.
-export function findDoors(paths: RawPath[], cmPerPt: number): DoorRaw[] {
+export function findDoors(paths: RawPath[], cmPerPt: number, pen = 1, K = 1): DoorRaw[] {
   const minL = 55 / cmPerPt, maxL = 125 / cmPerPt;
   const leaves: { a: [number, number]; b: [number, number]; L: number }[] = [];
   const pieces: { pts: [number, number][]; cx: number; cy: number }[] = [];
   for (const p of paths) {
     if (!p.stroke) continue;
     const n = p.pts.length;
-    if ((p.closed || n === 5) && (n === 4 || n === 5) && p.lw < 0.9) {
+    if ((p.closed || n === 5) && (n === 4 || n === 5) && p.lw < 0.9 * pen) {
       const q = p.pts.slice(0, 4);
       const e = [Math.hypot(q[1][0] - q[0][0], q[1][1] - q[0][1]), Math.hypot(q[2][0] - q[1][0], q[2][1] - q[1][1])];
       const long = e[0] >= e[1] ? 0 : 1; const L = e[long], T = e[1 - long];
-      if (L >= minL * 0.8 && L <= maxL && T >= 0.5 && T <= 5 && L / T > 6) {
+      if (L >= minL * 0.8 && L <= maxL && T >= 0.5 * K && T <= 5 * K && L / T > 6) {
         const a0 = q[long], a1 = q[long + 1], b0 = q[(long + 3) % 4], b1 = q[(long + 2) % 4];
         // short-side midpoints are the two ends of the leaf
         const A: [number, number] = [(a0[0] + b0[0]) / 2, (a0[1] + b0[1]) / 2], B: [number, number] = [(a1[0] + b1[0]) / 2, (a1[1] + b1[1]) / 2];
         leaves.push({ a: A, b: B, L });
       }
-    } else if (!p.closed && n >= 4 && n <= 24 && p.lw <= 0.9 && (isDark(p.sc) || isGrayish(p.sc))) {
+    } else if (!p.closed && n >= 4 && n <= 24 && p.lw <= 0.9 * pen && (isDark(p.sc) || isGrayish(p.sc))) {
       let sx = 0, sy = 0; for (const q of p.pts) { sx += q[0]; sy += q[1]; }
       pieces.push({ pts: p.pts, cx: sx / n, cy: sy / n });
     }
@@ -662,7 +728,7 @@ export function findDoors(paths: RawPath[], cmPerPt: number): DoorRaw[] {
         if (Math.hypot(pc.cx - H[0], pc.cy - H[1]) > R * 1.2) continue;
         let ok = true, lo = 1e9, hi = -1e9;
         for (const q of pc.pts) {
-          if (Math.abs(Math.hypot(q[0] - H[0], q[1] - H[1]) - R) > 1.6 + R * 0.03) { ok = false; break; }
+          if (Math.abs(Math.hypot(q[0] - H[0], q[1] - H[1]) - R) > 1.6 * K + R * 0.03) { ok = false; break; }
           let t = Math.atan2(q[1] - H[1], q[0] - H[0]) - fa; while (t > Math.PI) t -= 2 * Math.PI; while (t < -Math.PI) t += 2 * Math.PI;
           if (t < lo) lo = t; if (t > hi) hi = t;
         }
@@ -682,11 +748,11 @@ export function findDoors(paths: RawPath[], cmPerPt: number): DoorRaw[] {
   return out;
 }
 
-export function findStairs(paths: RawPath[], cmPerPt: number) {
+export function findStairs(paths: RawPath[], cmPerPt: number, pen = 1) {
   const segs: { h: { k: number; a: number; b: number }[]; v: { k: number; a: number; b: number }[] } = { h: [], v: [] };
   const minL = 45 / cmPerPt, maxL = 260 / cmPerPt;
   for (const p of paths) {
-    if (!p.stroke || p.pts.length !== 2 || p.lw > 0.9 || !isDark(p.sc)) continue;
+    if (!p.stroke || p.pts.length !== 2 || p.lw > 0.9 * pen || !isDark(p.sc)) continue;
     const [a, b] = p.pts;
     if (Math.abs(a[1] - b[1]) < 0.3 && Math.abs(a[0] - b[0]) > minL && Math.abs(a[0] - b[0]) < maxL) segs.h.push({ k: a[1], a: Math.min(a[0], b[0]), b: Math.max(a[0], b[0]) });
     else if (Math.abs(a[0] - b[0]) < 0.3 && Math.abs(a[1] - b[1]) > minL && Math.abs(a[1] - b[1]) < maxL) segs.v.push({ k: a[0], a: Math.min(a[1], b[1]), b: Math.max(a[1], b[1]) });
@@ -754,7 +820,8 @@ export function heuristicNames(a: Analysis) {
     for (const r of rs) {
       const area = m2(r);
       const w = Math.min(r.inner[2] - r.inner[0], r.inner[3] - r.inner[1]) * a.cmPerPt / 100;
-      if (r === big && area > 14) set(r, 'living_kitchen', 'סלון / מטבח');
+      if (r.link === 'bridge') set(r, area >= 3 ? 'balcony' : 'shaft', area >= 3 ? 'מרפסת' : 'פיר');
+      else if (r === big && area > 14) set(r, 'living_kitchen', 'סלון / מטבח');
       else if (area < 3.2) set(r, 'wc', 'שירותים');
       else if (area < 6.5 && w < 2.6) set(r, 'bath', 'חדר רחצה');
       else if (area >= 8.5 && area <= 16.5 && r !== big) set(r, 'bedroom', 'חדר שינה');

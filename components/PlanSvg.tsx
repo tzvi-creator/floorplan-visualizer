@@ -10,7 +10,7 @@ import FurnitureSvg from './Furniture';
 export type Style = 'tech' | 'mkt';
 export interface PlanSvgProps {
   an: Analysis; bldId: string; aptId: string | null; layers: Layers; style: Style;
-  selectedRoom?: string | null; onRoomClick?: (id: string) => void; viewBox?: Rect; onHover?: (id: string | null) => void;
+  selectedRoom?: string | null; onRoomClick?: (id: string) => void; viewBox?: Rect; onHover?: (id: string | null) => void; art?: string;
 }
 
 const FLOOR: Record<string, string> = {
@@ -32,13 +32,15 @@ export function Defs() {
   );
 }
 
-export default function PlanSvg({ an, bldId, aptId, layers, style, selectedRoom, onRoomClick, viewBox, onHover }: PlanSvgProps) {
+const APT_COLORS = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4', '#0aa5a5', '#f032e6', '#9a6324', '#808000', '#000075', '#d4a017', '#5a5a5a'];
+
+export default function PlanSvg({ an, bldId, aptId, layers, style, selectedRoom, onRoomClick, viewBox, onHover, art }: PlanSvgProps) {
   const sd = useMemo(() => scopeData(an, bldId, aptId), [an, bldId, aptId]);
   const cm = 1 / an.cmPerPt;
   const mkt = style === 'mkt';
   const rooms = sd.rooms.filter(r => layers.balconies || !isOutdoor(r.type));
   const vb = viewBox || sd.box;
-  const font = Math.max(6.5, Math.min(11, (vb[2] - vb[0]) / 55));
+  const font = Math.max(6.5, Math.min(18, (vb[2] - vb[0]) / 55));
 
   const furn = useMemo(() => {
     if (!layers.furniture) return [];
@@ -46,20 +48,26 @@ export default function PlanSvg({ an, bldId, aptId, layers, style, selectedRoom,
   }, [an, rooms, sd, layers.furniture]);
 
   const wallFill = mkt ? '#3b4048' : '#2d3138';
+  const overlay = !mkt && layers.original && !!art;
+  const aptIdx = (id: string | null) => { const i = an.apts.findIndex(a => a.id === id); return i; };
+  const byApt = !aptId && !mkt;
   const showFloors = layers.floors;
 
   return (
     <svg viewBox={`${vb[0]} ${vb[1]} ${vb[2] - vb[0]} ${vb[3] - vb[1]}`} xmlns="http://www.w3.org/2000/svg" style={{ width: '100%', height: '100%', display: 'block', background: mkt ? '#faf8f4' : '#fbfaf7' }} direction="ltr" preserveAspectRatio="xMidYMid meet">
       <Defs />
+      {!mkt && layers.original && art && <g pointerEvents="none" dangerouslySetInnerHTML={{ __html: art }} />}
       {showFloors && rooms.map(r => (
         <g key={r.id} onClick={onRoomClick ? () => onRoomClick(r.id) : undefined} onMouseEnter={onHover ? () => onHover(r.id) : undefined} onMouseLeave={onHover ? () => onHover(null) : undefined} style={{ cursor: onRoomClick ? 'pointer' : undefined }}>
-          {r.rects.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0] + 0.4} height={q[3] - q[1] + 0.4} fill={mkt ? (FLOOR[r.type] || '#ece7de') : (TYPE_BY_ID[r.type]?.color || '#e6e3dc')} />)}
+          {r.rects.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0] + 0.4} height={q[3] - q[1] + 0.4} fill={mkt ? (FLOOR[r.type] || '#ece7de') : byApt && aptIdx(r.aptId) >= 0 ? APT_COLORS[aptIdx(r.aptId) % APT_COLORS.length] : (TYPE_BY_ID[r.type]?.color || '#e6e3dc')} fillOpacity={overlay ? (byApt ? 0.26 : 0.4) : byApt ? 0.55 : 1} />)}
         </g>
       ))}
       {!showFloors && onRoomClick && rooms.map(r => <g key={r.id} onClick={() => onRoomClick(r.id)} style={{ cursor: 'pointer' }}>{r.rects.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0]} height={q[3] - q[1]} fill="transparent" />)}</g>)}
       {furn.map(({ it, key }) => <FurnitureSvg key={key} it={it} cm={cm} />)}
       {selectedRoom && rooms.filter(r => r.id === selectedRoom).map(r => <g key="sel" pointerEvents="none">{r.rects.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0]} height={q[3] - q[1]} fill="#c4501b" fillOpacity="0.18" />)}</g>)}
-      {layers.walls && <g fill={wallFill} pointerEvents="none">{sd.walls.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0] + 0.3} height={q[3] - q[1] + 0.3} />)}</g>}
+      {layers.walls && (overlay
+        ? <g fill="none" stroke="#c4501b" strokeWidth="0.9" vectorEffect="non-scaling-stroke" pointerEvents="none">{sd.walls.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0]} height={q[3] - q[1]} vectorEffect="non-scaling-stroke" />)}</g>
+        : <g fill={wallFill} pointerEvents="none">{sd.walls.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0] + 0.3} height={q[3] - q[1] + 0.3} />)}</g>)}
       {layers.openings && (
         <g pointerEvents="none">
           {sd.windows.map(w => {
@@ -81,6 +89,11 @@ export default function PlanSvg({ an, bldId, aptId, layers, style, selectedRoom,
               <line x1={d.hx} y1={d.hy} x2={d.sx} y2={d.sy} stroke={mkt ? '#8a5a2b' : '#3d4650'} strokeWidth="1.8" vectorEffect="non-scaling-stroke" />
             </g>);
           })}
+        </g>
+      )}
+      {byApt && layers.names && (
+        <g pointerEvents="none" fontFamily="Heebo, Arial" textAnchor="middle" fontWeight={800} style={{ paintOrder: 'stroke' }} stroke="#fff" strokeWidth={font * 0.5} strokeLinejoin="round">
+          {(bldId === '*' ? an.apts : an.apts.filter(a => a.bldId === bldId)).map(a => <text key={a.id} x={(a.bbox[0] + a.bbox[2]) / 2} y={(a.bbox[1] + a.bbox[3]) / 2} fontSize={font * 1.7} fillOpacity={0.9} fill={APT_COLORS[aptIdx(a.id) % APT_COLORS.length]}>{a.name}</text>)}
         </g>
       )}
       {layers.dimlines && <g pointerEvents="none">{rooms.filter(r => roomArea(an, r) > 3 && !isOutdoor(r.type)).map(r => <DimLines key={r.id} an={an} r={r} fs={font * 0.8} />)}</g>}

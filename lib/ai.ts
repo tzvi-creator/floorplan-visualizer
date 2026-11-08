@@ -37,7 +37,9 @@ ${TYPES_DOC}
     ],
   });
   const txt = resp.choices[0]?.message?.content || '{}';
-  const j = JSON.parse(txt.replace(/^```json|```$/g, '').trim());
+  const m = txt.match(/\{[\s\S]*\}/);
+  if (!m) throw new Error('תשובת AI לא תקינה');
+  const j = JSON.parse(m[0]);
   const valid = new Set(ROOM_TYPES.map(t => t.id));
   const out: ClassifyOutput = { rooms: [] };
   for (const r of j.rooms || []) if (typeof r.n === 'number' && valid.has(r.type) && typeof r.name === 'string') out.rooms.push({ n: r.n, type: r.type, name: r.name.slice(0, 40) });

@@ -25,6 +25,12 @@ export function ensureSchema() {
         created_at timestamptz NOT NULL DEFAULT now(),
         updated_at timestamptz NOT NULL DEFAULT now()
       )`);
+      await db().query(`CREATE TABLE IF NOT EXISTS vz_art (
+        plan_id uuid NOT NULL REFERENCES vz_plans(id) ON DELETE CASCADE,
+        bld_id text NOT NULL,
+        svg text NOT NULL,
+        PRIMARY KEY (plan_id, bld_id)
+      )`);
     })().catch(e => { ready = null; throw e; });
   }
   return ready;

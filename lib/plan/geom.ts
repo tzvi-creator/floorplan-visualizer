@@ -40,6 +40,11 @@ export function clip(a: Rect, b: Rect): Rect | null {
 export interface ScopeData { box: Rect; rooms: RoomT[]; walls: Rect[]; windows: (WindowT & { kind: OpeningKind })[]; doors: DoorT[] }
 /** geometry for an apartment (or a whole building when apt is null) */
 export function scopeData(an: Analysis, bldId: string, aptId: string | null, pad = 16): ScopeData {
+  if (bldId === '*') {
+    const box = boxOf(an.blds.map(b => b.bbox), pad + 10);
+    const walls: Rect[] = []; for (const b of an.blds) for (const w of b.walls) walls.push(w);
+    return { box, rooms: an.rooms, walls, windows: an.windows.map(w => ({ ...w, kind: openingKind(an, w) })), doors: an.doors };
+  }
   const bld = an.blds.find(b => b.id === bldId) || an.blds[0];
   const apt = aptId ? an.apts.find(a => a.id === aptId) : undefined;
   const rooms = apt ? aptRooms(an, apt) : an.rooms.filter(r => r.bldId === bld.id);
