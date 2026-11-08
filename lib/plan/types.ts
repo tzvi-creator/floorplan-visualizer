@@ -50,7 +50,7 @@ export function openingKind(an: Analysis, w: WindowT): OpeningKind {
   if (out(A) || out(B)) return w.lenPt * an.cmPerPt > 150 ? 'slider' : 'window';
   return 'door';
 }
-export interface AptT { id: string; bldId: string; name: string; number: number; roomIds: string[]; bbox: Rect; declared?: { area?: number; balcony?: number } }
+export interface AptT { id: string; bldId: string; name: string; number: number; roomIds: string[]; bbox: Rect; marker?: [number, number]; declared?: { area?: number; balcony?: number } }
 export interface BldT { id: string; name: string; bbox: Rect; lobbyId: string | null; aptIds: string[]; cores: { x: number; y: number }[]; walls: Rect[] }
 
 export interface Analysis {

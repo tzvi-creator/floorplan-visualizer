@@ -50,6 +50,7 @@ export default function PlanSvg({ an, bldId, aptId, layers, style, selectedRoom,
 
   const wallFill = mkt ? '#3b4048' : '#2d3138';
   const overlay = !mkt && layers.original && !!art;
+  const labelPos = (a: Analysis['apts'][number]): [number, number] => { if (a.marker) return [a.marker[0], a.marker[1] + font * 3.2]; const big = an.rooms.filter(r => r.aptId === a.id).sort((p, q) => q.areaPt2 - p.areaPt2)[0]; return big ? [(big.inner[0] + big.inner[2]) / 2, big.inner[1] + font * 2] : [(a.bbox[0] + a.bbox[2]) / 2, (a.bbox[1] + a.bbox[3]) / 2]; };
   const aptIdx = (id: string | null) => { const i = an.apts.findIndex(a => a.id === id); return i; };
   const byApt = !aptId && !mkt;
   const showFloors = layers.floors;
@@ -60,7 +61,7 @@ export default function PlanSvg({ an, bldId, aptId, layers, style, selectedRoom,
       {!mkt && layers.original && art && <g pointerEvents="none" dangerouslySetInnerHTML={{ __html: art }} />}
       {showFloors && rooms.map(r => (
         <g key={r.id} onClick={onRoomClick ? () => onRoomClick(r.id) : undefined} onMouseEnter={onHover ? () => onHover(r.id) : undefined} onMouseLeave={onHover ? () => onHover(null) : undefined} style={{ cursor: onRoomClick ? 'pointer' : undefined }}>
-          {r.rects.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0] + 0.4} height={q[3] - q[1] + 0.4} fill={mkt ? (FLOOR[r.type] || '#ece7de') : byApt && aptIdx(r.aptId) >= 0 ? APT_COLORS[aptIdx(r.aptId) % APT_COLORS.length] : (TYPE_BY_ID[r.type]?.color || '#e6e3dc')} fillOpacity={overlay ? (byApt ? 0.26 : 0.4) : byApt ? 0.55 : 1} />)}
+          {r.rects.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0] + 0.4} height={q[3] - q[1] + 0.4} fill={mkt ? (FLOOR[r.type] || '#ece7de') : byApt && aptIdx(r.aptId) < 0 ? '#9aa0a6' : byApt && aptIdx(r.aptId) >= 0 ? APT_COLORS[aptIdx(r.aptId) % APT_COLORS.length] : (TYPE_BY_ID[r.type]?.color || '#e6e3dc')} fillOpacity={overlay ? (byApt ? (aptIdx(r.aptId) < 0 ? 0.3 : 0.26) : 0.4) : byApt ? 0.55 : 1} />)}
         </g>
       ))}
       {!showFloors && onRoomClick && rooms.map(r => <g key={r.id} onClick={() => onRoomClick(r.id)} style={{ cursor: 'pointer' }}>{r.rects.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0]} height={q[3] - q[1]} fill="transparent" />)}</g>)}
@@ -68,7 +69,7 @@ export default function PlanSvg({ an, bldId, aptId, layers, style, selectedRoom,
       {rooms.filter(r => r.excluded).map(r => <g key={'x' + r.id} pointerEvents="none">{r.rects.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0]} height={q[3] - q[1]} fill="url(#xhatch)" />)}</g>)}
       {selectedRoom && rooms.filter(r => r.id === selectedRoom).map(r => <g key="sel" pointerEvents="none">{r.rects.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0]} height={q[3] - q[1]} fill="#c4501b" fillOpacity="0.18" />)}</g>)}
       {layers.walls && (overlay
-        ? <g fill="none" stroke="#c4501b" strokeWidth="0.9" vectorEffect="non-scaling-stroke" pointerEvents="none">{sd.walls.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0]} height={q[3] - q[1]} vectorEffect="non-scaling-stroke" />)}</g>
+        ? <g fill="none" stroke="#c4501b" strokeOpacity="0.6" strokeWidth="0.5" vectorEffect="non-scaling-stroke" pointerEvents="none">{sd.walls.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0]} height={q[3] - q[1]} vectorEffect="non-scaling-stroke" />)}</g>
         : <g fill={wallFill} pointerEvents="none">{sd.walls.map((q, i) => <rect key={i} x={q[0]} y={q[1]} width={q[2] - q[0] + 0.3} height={q[3] - q[1] + 0.3} />)}</g>)}
       {layers.openings && (
         <g pointerEvents="none">
@@ -95,13 +96,13 @@ export default function PlanSvg({ an, bldId, aptId, layers, style, selectedRoom,
       )}
       {byApt && layers.names && (
         <g pointerEvents="none" fontFamily="Heebo, Arial" textAnchor="middle" fontWeight={800} style={{ paintOrder: 'stroke' }} stroke="#fff" strokeWidth={font * 0.5} strokeLinejoin="round">
-          {(bldId === '*' ? an.apts : an.apts.filter(a => a.bldId === bldId)).map(a => <text key={a.id} x={(a.bbox[0] + a.bbox[2]) / 2} y={(a.bbox[1] + a.bbox[3]) / 2} fontSize={font * 1.7} fillOpacity={0.9} fill={APT_COLORS[aptIdx(a.id) % APT_COLORS.length]}>{a.name}</text>)}
+          {(bldId === '*' ? an.apts : an.apts.filter(a => a.bldId === bldId)).map(a => <text key={a.id} x={labelPos(a)[0]} y={labelPos(a)[1]} fontSize={font * 1.7} fillOpacity={0.9} fill={APT_COLORS[aptIdx(a.id) % APT_COLORS.length]}>{a.name}</text>)}
         </g>
       )}
       {layers.dimlines && <g pointerEvents="none">{rooms.filter(r => roomArea(an, r) > 3 && !isOutdoor(r.type)).map(r => <DimLines key={r.id} an={an} r={r} fs={font * 0.8} />)}</g>}
       {(layers.names || layers.dims || layers.areas) && (
         <g pointerEvents="none" fontFamily="Heebo, Arial, sans-serif" textAnchor="middle" style={{ paintOrder: 'stroke' }} stroke="#fff" strokeWidth={font * 0.28} strokeLinejoin="round">
-          {rooms.map(r => <RoomLabel key={r.id} an={an} r={r} layers={layers} fs={font} mkt={mkt} />)}
+          {rooms.map(r => <RoomLabel key={r.id} an={an} r={r} layers={layers} fs={font} mkt={mkt} overlayMode={overlay} />)}
         </g>
       )}
       {extra}
@@ -109,13 +110,13 @@ export default function PlanSvg({ an, bldId, aptId, layers, style, selectedRoom,
   );
 }
 
-function RoomLabel({ an, r, layers, fs, mkt }: { an: Analysis; r: RoomT; layers: Layers; fs: number; mkt: boolean }) {
+function RoomLabel({ an, r, layers, fs, mkt, overlayMode }: { an: Analysis; r: RoomT; layers: Layers; fs: number; mkt: boolean; overlayMode?: boolean }) {
   const [a, b] = roomDims(an, r); const area = roomArea(an, r);
   const w = r.inner[2] - r.inner[0], h = r.inner[3] - r.inner[1];
   const small = Math.min(w, h) < fs * 4.5 || area < 1.2;
   const f = small ? fs * 0.75 : fs;
   const lines: { t: string; k: string }[] = [];
-  if (layers.names && r.name && !(small && area < 0.9)) lines.push({ t: r.excluded ? r.name + ' (לא בדירה)' : r.name, k: 'n' });
+  if (layers.names && r.name && !(small && area < 0.9) && !(overlayMode && area < 3)) lines.push({ t: r.excluded ? r.name + ' (לא בדירה)' : r.name, k: 'n' });
   if (layers.dims && !small) lines.push({ t: `${fmtDim(a)} × ${fmtDim(b)}`, k: 'd' });
   if (layers.areas && area >= 0.9) lines.push({ t: `${area.toFixed(1)} מ״ר`, k: 'a' });
   if (!lines.length) return null;

@@ -1,10 +1,11 @@
 import type { Analysis } from './types';
 import { TYPE_BY_ID } from './types';
 
-export interface AptClassification { rooms: { n: number; type: string; name: string }[] }
+export interface AptClassification { aptNumber?: string; rooms: { n: number; type: string; name: string }[] }
 
 /** Apply an AI result (n = 1-based index in the room list that was sent) to the analysis. */
-export function applyClassification(an: Analysis, orderedRoomIds: string[], res: AptClassification) {
+export function applyClassification(an: Analysis, orderedRoomIds: string[], res: AptClassification, aptId?: string) {
+  if (aptId && res.aptNumber) { const apt = an.apts.find(a => a.id === aptId); if (apt) { apt.name = 'דירה ' + res.aptNumber; apt.number = +res.aptNumber; } }
   for (const r of res.rooms) {
     const id = orderedRoomIds[r.n - 1]; if (!id) continue;
     const room = an.rooms.find(x => x.id === id); if (!room || !room.auto) continue;

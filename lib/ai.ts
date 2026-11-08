@@ -17,7 +17,7 @@ export function aiClient() {
 const TYPES_DOC = ROOM_TYPES.filter(t => !['stairs', 'elevator', 'lobby'].includes(t.id)).map(t => `${t.id} = ${t.he}`).join('\n');
 
 export interface ClassifyInput { imageDataUrl: string; rooms: { n: number; areaM2: number; dimsM: string; hint?: string; current?: string }[]; aptLabel?: string }
-export interface ClassifyOutput { rooms: { n: number; type: string; name: string }[] }
+export interface ClassifyOutput { aptNumber?: string; rooms: { n: number; type: string; name: string }[] }
 
 export async function classifyApartment(inp: ClassifyInput): Promise<ClassifyOutput> {
   const { client, model } = aiClient();
@@ -25,8 +25,8 @@ export async function classifyApartment(inp: ClassifyInput): Promise<ClassifyOut
 המשימה: לזהות לכל חדר ממוספר את סוגו ושמו בעברית. השתמש בטקסטים שכתובים בתכנית (למשל "סלון", "מטבח", "חדר", "סוכה", "מרפסת שמש", "ממ״ד", "וונטה"), בכלי הסניטציה והריהוט שמסורטטים (אסלה/כיור/אמבטיה = חדר רחצה או שירותים, מיטה = חדר שינה, ארון מטבח וכיריים = מטבח), בקירות עבים מאוד סביב חדר (ממ״ד) ובמידות.
 סוגים מותרים (id = שם):
 ${TYPES_DOC}
-כללים: שדה hint מציין איך החדר מחובר לדירה – חדר שמחובר רק דרך חלון/הזזה הוא כמעט תמיד מרפסת (ריצוף משבצות, מעקה, מחוץ לקירות החוץ העבים), פיר או חדרון חיצוני קטן. אל תסווג מרפסת כחדר שינה. כניסה/מבואה קטנה בין הדלת הראשית לשאר הדירה = entrance. חלל פתוח שכולל סלון ומטבח יסומן living_kitchen (שם "סלון / מטבח"). בחדר שינה הורים (master) יש בדרך כלל חדר רחצה צמוד (master_bath). מרפסת סוכה/שמש/רגילה = balcony_sukkah/balcony_sun/balcony. חדרון קטן שהוא פיר/וונטה = shaft. חדר שינה נוסף: "חדר שינה 2" וכן הלאה. אל תמציא חדרים. ענה רק JSON תקני בפורמט:
-{"rooms":[{"n":1,"type":"bedroom","name":"חדר שינה 2"}]}`;
+כללים: שדה hint מציין איך החדר מחובר לדירה – חדר שמחובר רק דרך חלון/הזזה הוא כמעט תמיד מרפסת (ריצוף משבצות, מעקה, מחוץ לקירות החוץ העבים), פיר או חדרון חיצוני קטן. אל תסווג מרפסת כחדר שינה. כניסה/מבואה קטנה בין הדלת הראשית לשאר הדירה = entrance. חלל פתוח שכולל סלון ומטבח יסומן living_kitchen (שם "סלון / מטבח"). בחדר שינה הורים (master) יש בדרך כלל חדר רחצה צמוד (master_bath). מרפסת סוכה/שמש/רגילה = balcony_sukkah/balcony_sun/balcony. חדרון קטן שהוא פיר/וונטה = shaft. חדר שינה נוסף: "חדר שינה 2" וכן הלאה. אל תמציא חדרים. אם בתוך הדירה מופיע עיגול אדום עם מספר הדירה, החזר את המספר ב-aptNumber (ספרות בלבד). ענה רק JSON תקני בפורמט:
+{"aptNumber":"14","rooms":[{"n":1,"type":"bedroom","name":"חדר שינה 2"}]}`;
   const user = `${inp.aptLabel ? inp.aptLabel + '\n' : ''}החדרים (n = המספר בעיגול):\n${JSON.stringify(inp.rooms)}`;
   const resp = await client.chat.completions.create({
     model, temperature: 0.1, max_tokens: 1500,
@@ -42,6 +42,7 @@ ${TYPES_DOC}
   const j = JSON.parse(m[0]);
   const valid = new Set(ROOM_TYPES.map(t => t.id));
   const out: ClassifyOutput = { rooms: [] };
+  if (j.aptNumber != null && /^\d{1,3}$/.test(String(j.aptNumber).trim())) out.aptNumber = String(j.aptNumber).trim();
   for (const r of j.rooms || []) if (typeof r.n === 'number' && valid.has(r.type) && typeof r.name === 'string') out.rooms.push({ n: r.n, type: r.type, name: r.name.slice(0, 40) });
   return out;
 }

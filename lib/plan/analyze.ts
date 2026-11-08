@@ -540,7 +540,7 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
     let reg = 0; for (const rad of [2, 5, 9, 14]) { const l = regAt(x, y, rad); if (l && isRoomReg(regs[l])) { reg = l; break; } }
     if (reg && !markerRegs.some(m => m.reg === reg)) markerRegs.push({ x, y, reg });
   }
-  const apartments: { bld: number; regs: number[] }[] = [];
+  const apartments: { bld: number; regs: number[]; marker?: [number, number] }[] = [];
   const visited = new Set<number>();
   blds.forEach((b, bi) => {
     visited.add(b.lobby); assign.set(b.lobby, { bld: bi, apt: null, role: 'lobby' });
@@ -575,16 +575,32 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
     const nearestBld = (m: { x: number; y: number }) => { let best = 0, bd = 1e18; blds.forEach((q, i) => { const d = Math.hypot(q.cx - m.x, q.cy - m.y); if (d < bd) { bd = d; best = i; } }); return best; };
     const mk = markerRegs.filter(m => union.has(m.reg) && nearestBld(m) === bi);
     if (mk.length >= 2) {
-      const own = new Map<number, number>(); let front: number[] = [];
-      mk.forEach((m, i) => { if (!own.has(m.reg)) { own.set(m.reg, i); front.push(m.reg); } });
-      while (front.length) {
-        const nx: number[] = [];
-        for (const r of front) for (const g of [doorGraph, partGraph]) for (const n of g.get(r) || []) { if (!union.has(n) || own.has(n)) continue; own.set(n, own.get(r)!); nx.push(n); }
-        front = nx;
+      // each region goes to the marker it can reach with the shortest walk (centroid to centroid) through doors / open necks / thin partitions
+      const dist = new Map<number, number>(), own = new Map<number, number>();
+      const heap: [number, number][] = []; // [dist, region]
+      mk.forEach((m, i) => { if (!own.has(m.reg)) { own.set(m.reg, i); dist.set(m.reg, 0); heap.push([0, m.reg]); } });
+      while (heap.length) {
+        heap.sort((p, q) => p[0] - q[0]); const [d, r] = heap.shift()!;
+        if (d > (dist.get(r) ?? 1e18)) continue;
+        const cr = centerOf(regs[r]);
+        for (const g of [doorGraph, partGraph]) for (const n of g.get(r) || []) {
+          if (!union.has(n)) continue;
+          const cn = centerOf(regs[n]); const nd = d + Math.hypot(cr[0] - cn[0], cr[1] - cn[1]) + 4;
+          if (nd < (dist.get(n) ?? 1e18)) { dist.set(n, nd); own.set(n, own.get(r)!); heap.push([nd, n]); }
+        }
       }
+      // the stair / elevator / lobby column is common space: small rooms sitting in that band do not belong to an apartment
+      const lb = regs[b.lobby]; const band: Rect = [lb.x0 * res - 14 * K, lb.y0 * res - 40 * K, (lb.x1 + 1) * res + 14 * K, (lb.y1 + 1) * res + 40 * K];
+      const stairBox = (((b as any).stairSet as Set<number>) || new Set<number>());
+      const inBand = (r: number) => { const [cx, cy] = centerOf(regs[r]); return cx > band[0] && cx < band[2] && cy > band[1] && cy < band[3]; };
+      const hasMarker = new Set(mk.map(m => m.reg));
       const groups: number[][] = mk.map(() => []);
-      for (const [r, i] of own) groups[i].push(r);
-      for (const g of groups) { if (g.reduce((sum, r) => sum + regArea(r), 0) < 12) continue; for (const r of g) visited.add(r); apartments.push({ bld: bi, regs: g }); }
+      for (const [r, i] of own) {
+        const elevN = (() => { const R = regs[r]; let n = 0; for (const e of elev) if (Math.hypot(e.x - b.cx, e.y - b.cy) < 800 * K && e.x > R.x0 * res && e.x < (R.x1 + 1) * res && e.y > R.y0 * res && e.y < (R.y1 + 1) * res) n++; return n; })();
+        if (!hasMarker.has(r) && ((regArea(r) < 9 && (inBand(r) || stairBox.has(r))) || (elevN >= 2 && regArea(r) < 45))) { assign.set(r, { bld: bi, apt: null, role: 'common' }); visited.add(r); continue; }
+        groups[i].push(r);
+      }
+      groups.forEach((g, gi) => { if (g.reduce((sum, r) => sum + regArea(r), 0) < 12) return; for (const r of g) visited.add(r); apartments.push({ bld: bi, regs: g, marker: [mk[gi].x, mk[gi].y] }); });
       return;
     }
     for (const comp of compList) {
@@ -665,6 +681,13 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
     for (const [n, w] of bridgeAdj(r.id)) { const as = assign.get(n); if (as && w > bw) { best = n; bw = w; } }
     if (best && bw >= 6 / res) assign.set(r.id, { bld: assign.get(best)!.bld, apt: null, role: 'common' });
   }
+  // indoor rooms whose door was not detected: they belong to the apartment they share the longest wall with
+  for (const r of roomRegs) {
+    if (assign.has(r.id) || regs[r.id].tile / Math.max(1, regs[r.id].area) >= 0.05 || regArea(r.id) < 2) continue;
+    let best = 0, bw = 0;
+    for (const [n, w] of bridgeAdj(r.id)) { const as = assign.get(n); if (as && as.apt !== null && w > bw) { best = n; bw = w; } }
+    if (best && bw >= 10 / res) assign.set(r.id, { ...assign.get(best)!, orphan: false });
+  }
   // second pass for orphans that only touch other orphans
   for (let pass = 0; pass < 2; pass++) for (const r of roomRegs) {
     if (assign.has(r.id) || !orphanOk(r.id)) continue;
@@ -702,7 +725,7 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
     const bbox: Rect = [r.x0 * res, r.y0 * res, (r.x1 + 1) * res, (r.y1 + 1) * res];
     const rm: RoomT = {
       link: as.orphan ? 'bridge' : 'door',
-      id: 'r' + r.id, aptId: as.apt === null ? null : 'a' + as.apt, bldId: 'b' + as.bld, name: '', type: as.role || 'other', auto: true,
+      id: 'r' + r.id, aptId: as.apt === null ? null : 'a' + as.apt, bldId: 'b' + as.bld, name: '', type: as.role === 'common' ? 'other' : as.role || 'other', auto: true,
       rects, bbox, inner: innerRect(r), areaPt2: r.area * res * res, cx: (r.sx / r.area) * res, cy: (r.sy / r.area) * res, region: r.id, tile: r.area ? Math.round((r.tile / r.area) * 1000) / 1000 : 0,
     };
     rooms.push(rm); regionRoom.set(r.id, rm);
@@ -715,7 +738,7 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
   apartments.forEach((a, ai) => {
     const rs = rooms.filter(r => r.aptId === 'a' + ai);
     if (!rs.length) return;
-    aptsOut.push({ id: 'a' + ai, bldId: 'b' + a.bld, name: '', number: 0, roomIds: rs.map(r => r.id), bbox: unionBox(rs.map(r => r.bbox)) });
+    aptsOut.push({ id: 'a' + ai, bldId: 'b' + a.bld, name: '', number: 0, roomIds: rs.map(r => r.id), bbox: unionBox(rs.map(r => r.bbox)), marker: a.marker });
   });
   // name buildings: right-to-left, then apartments sorted by reading order in each building
   const bOrder = bldsOut.map((b, i) => ({ b, i, cx: blds[i].cx })).sort((p, q) => q.cx - p.cx);
@@ -919,7 +942,7 @@ export function findElevators(paths: RawPath[], cmPerPt: number) {
 // ---------- naming heuristics (used when AI labelling is unavailable, and as a base) ----------
 export function heuristicNames(a: Analysis) {
   const m2 = (r: RoomT) => r.areaPt2 * a.cmPerPt * a.cmPerPt / 10000;
-  for (const r of a.rooms) { if (!r.auto) continue; if (r.type === 'lobby') r.name = 'לובי קומתי'; else if (r.type === 'stairs') r.name = 'חדר מדרגות'; else if (r.type === 'elevator') r.name = 'מעלית'; }
+  for (const r of a.rooms) { if (!r.auto) continue; if (r.type === 'lobby') r.name = 'לובי קומתי'; else if (r.type === 'stairs') r.name = 'חדר מדרגות'; else if (r.type === 'elevator') r.name = 'מעלית'; else if (!r.aptId && r.type === 'other') r.name = 'שטח משותף'; }
   const adjacentByDoor = (id: string) => a.doors.filter(d => d.a === id || d.b === id).map(d => (d.a === id ? d.b : d.a)).filter(Boolean) as string[];
   const byId = new Map(a.rooms.map(r => [r.id, r]));
   for (const apt of a.apts) {

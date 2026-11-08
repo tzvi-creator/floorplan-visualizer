@@ -38,7 +38,7 @@ for (const s of SAMPLES) {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const res = await classifyApartment({ imageDataUrl: 'data:image/png;base64,' + Buffer.from(png).toString('base64'), rooms: roomFacts(an, rooms), aptLabel: apt.name });
-        applyClassification(an, rooms.map(r => r.id), res); ok++; return;
+        applyClassification(an, rooms.map(r => r.id), res, apt.id); ok++; return;
       } catch (e: any) { if (attempt) { fail++; console.log('  AI fail', apt.id, e?.message); } else await new Promise(r => setTimeout(r, 9000)); }
     }
   });

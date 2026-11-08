@@ -27,7 +27,7 @@ export async function classifyOne(an: Analysis, aptId: string, raw: RawPage | nu
   for (let attempt = 0; attempt < 3; attempt++) {
     const r = await fetch('/api/classify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ imageDataUrl: png, rooms: roomFacts(an, rooms), aptLabel: apt.name }) });
     const j = await r.json().catch(() => ({}));
-    if (r.ok) { applyClassification(an, rooms.map(x => x.id), j); return; }
+    if (r.ok) { applyClassification(an, rooms.map(x => x.id), j, aptId); return; }
     lastErr = j.error || r.statusText;
     if (r.status === 429 || /rate limit/i.test(lastErr)) await sleep(5000 * (attempt + 1)); else break;
   }
