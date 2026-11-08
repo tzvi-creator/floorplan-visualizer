@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Rect } from '@/lib/plan/types';
 
 /** pan / zoom container that feeds a viewBox to its child render function */
-export default function Viewport({ home, children }: { home: Rect; children: (vb: Rect) => React.ReactNode }) {
+export default function Viewport({ home, children, onPlanPointer }: { home: Rect; children: (vb: Rect) => React.ReactNode; onPlanPointer?: (kind: 'click' | 'move', x: number, y: number) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const [vb, setVb] = useState<Rect>(home);
   const homeKey = home.map(v => Math.round(v)).join(',');
@@ -34,17 +34,18 @@ export default function Viewport({ home, children }: { home: Rect; children: (vb
 
   const onDown = (e: React.PointerEvent) => { drag.current = { x: e.clientX, y: e.clientY, vb, moved: false }; };
   const onMove = (e: React.PointerEvent) => {
-    const d = drag.current; if (!d) return;
+    const d = drag.current; if (!d) { if (onPlanPointer) { const [x, y] = toPlan(e); onPlanPointer('move', x, y); } return; }
     const el = ref.current!; const dx = e.clientX - d.x, dy = e.clientY - d.y;
     if (Math.abs(dx) + Math.abs(dy) > 4) { d.moved = true; touched.current = true; }
     if (!d.moved) return;
     const sx = (d.vb[2] - d.vb[0]) / el.clientWidth, sy = (d.vb[3] - d.vb[1]) / el.clientHeight;
     setVb([d.vb[0] - dx * sx, d.vb[1] - dy * sy, d.vb[2] - dx * sx, d.vb[3] - dy * sy]);
   };
-  const onUp = () => { setTimeout(() => { drag.current = null; }, 0); };
+  const toPlan = (e: React.PointerEvent): [number, number] => { const r = ref.current!.getBoundingClientRect(); return [vb[0] + ((e.clientX - r.left) / r.width) * (vb[2] - vb[0]), vb[1] + ((e.clientY - r.top) / r.height) * (vb[3] - vb[1])]; };
+  const onUp = (e?: React.PointerEvent) => { const moved = drag.current?.moved; if (e && e.type === 'pointerup' && !moved && onPlanPointer) { const [x, y] = toPlan(e); onPlanPointer('click', x, y); } setTimeout(() => { drag.current = null; }, 0); };
 
   return (
-    <div className="viewport" ref={ref} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp} onClickCapture={e => { if (drag.current?.moved) e.stopPropagation(); }} style={{ touchAction: 'none', cursor: drag.current?.moved ? 'grabbing' : 'default' }}>
+    <div className="viewport" ref={ref} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={() => onUp()} onClickCapture={e => { if (drag.current?.moved) e.stopPropagation(); }} style={{ touchAction: 'none', cursor: drag.current?.moved ? 'grabbing' : 'default' }}>
       {children(vb)}
       <div className="vp-tools">
         <button title="התאמה למסך" onClick={() => { touched.current = false; setVb(fitAspect(home)); }}>⤢</button>

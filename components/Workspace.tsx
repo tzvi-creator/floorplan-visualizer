@@ -8,6 +8,7 @@ import { aptRooms, aptStats, roomArea, roomDims, fmtDim, planSummary, rebuildApt
 import { DEFAULT_LAYERS, LAYER_LABELS, LAYER_PRESETS, type Layers, type PlanSettings } from '@/lib/plan/layers';
 import { classifyOne, classifyAll } from '@/lib/plan/clientAi';
 import { compact } from '@/lib/plan/classify';
+import { splitByLine } from '@/lib/plan/edit';
 import PlanSvg from './PlanSvg';
 import Viewport from './Viewport';
 
@@ -32,6 +33,11 @@ export default function Workspace({ id }: { id: string }) {
   const [busy, setBusy] = useState(''); const [toast, setToast] = useState('');
   const [arts, setArts] = useState<Record<string, string>>({});
   const snapRef = useRef<(() => string) | null>(null);
+  const hist = useRef<Analysis[]>([]);
+  const [tool, setTool] = useState<'select' | 'divide' | 'paint'>('select');
+  const [paintTarget, setPaintTarget] = useState<string>('');
+  const [divA, setDivA] = useState<[number, number] | null>(null);
+  const [cursor, setCursor] = useState<[number, number] | null>(null);
   const loaded = useRef(false);
 
   useEffect(() => {
@@ -58,9 +64,10 @@ export default function Workspace({ id }: { id: string }) {
   }, [dirty, an, settings, name, id]);
 
   const mutate = useCallback((fn: (a: Analysis) => void) => {
-    setAn(prev => { if (!prev) return prev; const c: Analysis = structuredClone(prev); fn(c); rebuildApts(c); return c; });
+    setAn(prev => { if (!prev) return prev; hist.current.push(prev); if (hist.current.length > 40) hist.current.shift(); const c: Analysis = structuredClone(prev); fn(c); rebuildApts(c); return c; });
     setDirty(true);
   }, []);
+  const undo = () => { const p = hist.current.pop(); if (p) { setAn(p); setDirty(true); } };
   const patchSettings = (p: Partial<PlanSettings>) => { setSettings(s => ({ ...s, ...p })); setDirty(true); };
   const flash = (t: string) => { setToast(t); setTimeout(() => setToast(''), 3500); };
 
@@ -85,6 +92,29 @@ export default function Workspace({ id }: { id: string }) {
   const art = needIds.map(i => arts[i] || '').join('');
   const hasArt = needIds.some(i => arts[i]);
 
+  const newApt = (a: Analysis, bldId: string, bbox: Rect) => { const n = a.apts.length ? Math.max(...a.apts.map(x => +x.id.slice(1) || 0)) + 1 : 0; const b = a.blds.find(x => x.id === bldId) || a.blds[0]; const num = b.aptIds.length + 1; const aid = 'a' + n; a.apts.push({ id: aid, bldId: b.id, name: `דירה ${num}`, number: num, roomIds: [], bbox }); b.aptIds.push(aid); return aid; };
+  const paint = (rid: string) => {
+    if (!paintTarget) { flash('בחרו קודם לאיזו דירה לשייך'); return; }
+    mutate(a => {
+      const r = a.rooms.find(x => x.id === rid); if (!r) return;
+      if (paintTarget === '__none') { r.aptId = null; r.excluded = false; }
+      else if (paintTarget === '__excl') { r.excluded = true; }
+      else { r.excluded = false; r.aptId = paintTarget === '__new' ? newApt(a, r.bldId || a.blds[0].id, r.bbox) : paintTarget; if (paintTarget === '__new') setTimeout(() => setPaintTarget(r.aptId!), 0); }
+      for (const b of a.blds) b.aptIds = a.apts.filter(x => x.bldId === b.id && a.rooms.some(q => q.aptId === x.id)).map(x => x.id);
+      a.apts = a.apts.filter(x => a.rooms.some(q => q.aptId === x.id));
+    });
+  };
+  const roomClick = (rid: string) => { if (tool === 'paint') paint(rid); else if (tool === 'select') selectRoom(rid); };
+  const onPlanPointer = (kind: 'click' | 'move', x: number, y: number) => {
+    if (tool !== 'divide') return;
+    if (kind === 'move') { if (divA) setCursor([x, y]); return; }
+    if (!divA) { setDivA([x, y]); setCursor([x, y]); return; }
+    const horiz = Math.abs(x - divA[0]) >= Math.abs(y - divA[1]);
+    const A: [number, number] = divA, B: [number, number] = horiz ? [x, divA[1]] : [divA[0], y];
+    let n = 0; mutate(a => { n = splitByLine(a, A, B); });
+    setDivA(null); setCursor(null);
+    setTimeout(() => flash(n ? `החדר פוצל (${n}). שייכו כל חלק לדירה בכלי ״שיוך חדרים״` : 'הקו לא חוצה חדר שלם – הקו צריך לעבור מקיר לקיר'), 50);
+  };
   useEffect(() => { if (view === 'mkt') setLayers(l => (l.furniture ? l : { ...l, furniture: true })); }, [view]);
 
   if (loadErr) return <div className="center-card"><div className="card"><div className="err">{loadErr}</div><p><Link href="/">חזרה לרשימת התכניות</Link></p></div></div>;
@@ -151,9 +181,19 @@ export default function Workspace({ id }: { id: string }) {
           {busy && <div className="banner">{busy}</div>}
           {!busy && !an.meta.aiUsed && <div className="banner">שמות החדרים הוערכו לפי גיאומטריה בלבד. אפשר לעדכן ידנית (לשונית "עריכה") או להפעיל זיהוי AI.</div>}
           {toast && <div className="banner" style={{ background: '#e3f4e8', borderColor: '#9fd2ae', color: '#1d5a35' }}>{toast}</div>}
+          {view === '2d' && (
+            <div className="toolbar">
+              <button className={tool === 'select' ? 'on' : ''} onClick={() => { setTool('select'); setDivA(null); }}>↖ בחירה</button>
+              <button className={tool === 'divide' ? 'on' : ''} onClick={() => { setTool('divide'); setDivA(null); }} title="לחצו בקצה אחד של קיר/קו ושוב בקצה השני – כל חדר שהקו חוצה מקצה לקצה יפוצל לשניים">✏ קו הפרדה</button>
+              <button className={tool === 'paint' ? 'on' : ''} onClick={() => { setTool('paint'); setDivA(null); }} title="בחרו דירה ואז לחצו על חדרים כדי לשייך אותם">🖌 שיוך חדרים</button>
+              {tool === 'paint' && <select value={paintTarget} onChange={e => setPaintTarget(e.target.value)} style={{ width: 190 }}><option value="">לאיזו דירה?</option>{an.apts.filter(a => sel.bld === '*' || a.bldId === bld.id).map(a => <option key={a.id} value={a.id}>{a.name}{an.blds.length > 1 ? ' · ' + (an.blds.find(b => b.id === a.bldId)?.name || '') : ''}</option>)}<option value="__new">+ דירה חדשה</option><option value="__excl">לא חלק מהדירה (מוחרג)</option><option value="__none">שטח משותף / ללא דירה</option></select>}
+              <button onClick={undo} disabled={!hist.current.length} title="ביטול פעולה אחרונה">↶ בטל</button>
+              {tool === 'divide' && <span className="muted" style={{ fontSize: 13 }}>{divA ? 'לחצו בקצה השני של הקו (מקיר לקיר)' : 'לחצו בתחילת הקו'}</span>}
+            </div>
+          )}
           {view !== '3d' && (
-            <Viewport home={home}>
-              {vb => <PlanSvg an={an} bldId={scopeBld} aptId={apt ? apt.id : null} layers={layers} style={view === 'mkt' ? 'mkt' : 'tech'} selectedRoom={sel.room} onRoomClick={selectRoom} viewBox={vb} art={art} />}
+            <Viewport home={home} onPlanPointer={tool === 'divide' ? onPlanPointer : undefined}>
+              {vb => <PlanSvg an={an} bldId={scopeBld} aptId={apt ? apt.id : null} layers={layers} style={view === 'mkt' ? 'mkt' : 'tech'} selectedRoom={sel.room} onRoomClick={roomClick} viewBox={vb} art={art} extra={divA && cursor ? (() => { const horiz = Math.abs(cursor[0] - divA[0]) >= Math.abs(cursor[1] - divA[1]); return <g pointerEvents="none"><line x1={divA[0]} y1={divA[1]} x2={horiz ? cursor[0] : divA[0]} y2={horiz ? divA[1] : cursor[1]} stroke="#e6194b" strokeWidth="2.5" strokeDasharray="8 5" vectorEffect="non-scaling-stroke" /><circle cx={divA[0]} cy={divA[1]} r="5" fill="#e6194b" /></g>; })() : null} />}
             </Viewport>
           )}
           {view === '3d' && (

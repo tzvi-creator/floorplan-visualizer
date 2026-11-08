@@ -529,6 +529,17 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
     blds.push({ cx: c.x, cy: c.y, lobby, stairs: stairSet.size ? [...stairSet][0] : 0 });
     (blds[blds.length - 1] as any).stairSet = stairSet;
   }
+  // red numbered circles = apartment markers
+  const markerRegs: { x: number; y: number; reg: number }[] = [];
+  for (const p of raw.paths) {
+    if (!p.stroke || !isRed(p.sc) || p.pts.length < 10) continue;
+    let mnx = 1e9, mny = 1e9, mxx = -1e9, mxy = -1e9; for (const q of p.pts) { mnx = Math.min(mnx, q[0]); mxx = Math.max(mxx, q[0]); mny = Math.min(mny, q[1]); mxy = Math.max(mxy, q[1]); }
+    const w = mxx - mnx, h = mxy - mny;
+    if (!(w > 8 * K && w < 60 * K && Math.abs(w - h) < 0.25 * w)) continue;
+    const x = (mnx + mxx) / 2, y = (mny + mxy) / 2;
+    let reg = 0; for (const rad of [2, 5, 9, 14]) { const l = regAt(x, y, rad); if (l && isRoomReg(regs[l])) { reg = l; break; } }
+    if (reg && !markerRegs.some(m => m.reg === reg)) markerRegs.push({ x, y, reg });
+  }
   const apartments: { bld: number; regs: number[] }[] = [];
   const visited = new Set<number>();
   blds.forEach((b, bi) => {
@@ -547,6 +558,7 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
     const lobbyN = new Set(edgesOf(b.lobby));
     for (const [n] of bridgeAdj(b.lobby)) lobbyN.add(n);
     const compOf = new Map<number, number>();
+    const compList: number[][] = [];
     for (const start of roomRegs) {
       const sid = start.id;
       if (visited.has(sid) || blocked.has(sid) || compOf.has(sid)) continue;
@@ -556,6 +568,26 @@ export function analyzePage(raw: RawPage, opt: AnalyzeOptions = {}): Analysis {
         const r = q.pop()!; comp.push(r);
         for (const g of [doorGraph, partGraph]) for (const n of g.get(r) || []) { if (compOf.has(n) || visited.has(n) || blocked.has(n) || !isRoomReg(regs[n])) continue; compOf.set(n, sid); q.push(n); }
       }
+      compList.push(comp);
+    }
+    // apartment markers (red numbered circles): one per apartment -> grow each apartment from its marker
+    const union = new Set(compList.flat());
+    const nearestBld = (m: { x: number; y: number }) => { let best = 0, bd = 1e18; blds.forEach((q, i) => { const d = Math.hypot(q.cx - m.x, q.cy - m.y); if (d < bd) { bd = d; best = i; } }); return best; };
+    const mk = markerRegs.filter(m => union.has(m.reg) && nearestBld(m) === bi);
+    if (mk.length >= 2) {
+      const own = new Map<number, number>(); let front: number[] = [];
+      mk.forEach((m, i) => { if (!own.has(m.reg)) { own.set(m.reg, i); front.push(m.reg); } });
+      while (front.length) {
+        const nx: number[] = [];
+        for (const r of front) for (const g of [doorGraph, partGraph]) for (const n of g.get(r) || []) { if (!union.has(n) || own.has(n)) continue; own.set(n, own.get(r)!); nx.push(n); }
+        front = nx;
+      }
+      const groups: number[][] = mk.map(() => []);
+      for (const [r, i] of own) groups[i].push(r);
+      for (const g of groups) { if (g.reduce((sum, r) => sum + regArea(r), 0) < 12) continue; for (const r of g) visited.add(r); apartments.push({ bld: bi, regs: g }); }
+      return;
+    }
+    for (const comp of compList) {
       const touches = comp.some(r => lobbyN.has(r));
       const tot = comp.reduce((sum, r) => sum + regArea(r), 0);
       if (!touches || tot < 25 || !comp.some(r => regArea(r) >= 12)) continue;

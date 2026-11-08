@@ -10,7 +10,7 @@ import FurnitureSvg from './Furniture';
 export type Style = 'tech' | 'mkt';
 export interface PlanSvgProps {
   an: Analysis; bldId: string; aptId: string | null; layers: Layers; style: Style;
-  selectedRoom?: string | null; onRoomClick?: (id: string) => void; viewBox?: Rect; onHover?: (id: string | null) => void; art?: string;
+  selectedRoom?: string | null; onRoomClick?: (id: string) => void; viewBox?: Rect; onHover?: (id: string | null) => void; art?: string; extra?: React.ReactNode;
 }
 
 const FLOOR: Record<string, string> = {
@@ -35,11 +35,11 @@ export function Defs() {
 
 const APT_COLORS = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4', '#0aa5a5', '#f032e6', '#9a6324', '#808000', '#000075', '#d4a017', '#5a5a5a'];
 
-export default function PlanSvg({ an, bldId, aptId, layers, style, selectedRoom, onRoomClick, viewBox, onHover, art }: PlanSvgProps) {
+export default function PlanSvg({ an, bldId, aptId, layers, style, selectedRoom, onRoomClick, viewBox, onHover, art, extra }: PlanSvgProps) {
   const sd = useMemo(() => scopeData(an, bldId, aptId), [an, bldId, aptId]);
   const cm = 1 / an.cmPerPt;
   const mkt = style === 'mkt';
-  const rooms = sd.rooms.filter(r => layers.balconies || !isOutdoor(r.type));
+  const rooms = sd.rooms.filter(r => (layers.balconies || !isOutdoor(r.type)) && !(mkt && r.excluded));
   const vb = viewBox || sd.box;
   const font = Math.max(6.5, Math.min(18, (vb[2] - vb[0]) / 55));
 
@@ -104,6 +104,7 @@ export default function PlanSvg({ an, bldId, aptId, layers, style, selectedRoom,
           {rooms.map(r => <RoomLabel key={r.id} an={an} r={r} layers={layers} fs={font} mkt={mkt} />)}
         </g>
       )}
+      {extra}
     </svg>
   );
 }

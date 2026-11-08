@@ -74,7 +74,7 @@ export default function View3D(props: View3DProps) {
       const ground = new THREE.Mesh(new THREE.BoxGeometry(gw, 0.05, gd), new THREE.MeshStandardMaterial({ color: '#d9dce0', roughness: 1 })); ground.position.y = -0.03; ground.receiveShadow = true; content.add(ground);
 
       // floors
-      const rooms = sd.rooms.filter(r => layers.balconies || !isOutdoor(r.type));
+      const rooms = sd.rooms.filter(r => (layers.balconies || !isOutdoor(r.type)) && !r.excluded);
       for (const r of rooms) {
         const col = layers.floors ? (TYPE_BY_ID[r.type]?.color || '#e6e3dc') : '#e9e7e2';
         const sel = selectedRoom === r.id;
